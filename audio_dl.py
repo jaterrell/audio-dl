@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
-audio_dl.py — Download high-quality audio from YouTube or SoundCloud.
+audio_dl.py — Download high-quality audio from YouTube, SoundCloud, and
+anywhere else yt-dlp supports.
 
 Usage:
-    python audio_dl.py <url> [--format mp3|m4a|flac|alac|opus|wav] [--output DIR]
-    python audio_dl.py <soundcloud_url> --sc-auth TOKEN
-
-Supported sources:
-    - YouTube    (youtube.com, youtu.be)
-    - SoundCloud (soundcloud.com) — some tracks require OAuth token
+    python audio_dl.py <url> [<url> ...] [--format mp3|m4a|flac|alac|opus|wav] [--output DIR]
+    python audio_dl.py <url> --cookies-from-browser chrome
+    python audio_dl.py <playlist_url> --playlist
 
 Requirements:
     pip install yt-dlp
@@ -16,9 +14,9 @@ Requirements:
 """
 
 import argparse
-import sys
 import os
 import shutil
+import sys
 
 
 def detect_platform(url: str) -> str:
@@ -74,8 +72,6 @@ def sanitize_url(url: str) -> str:
 
     # SoundCloud — strip tracking params, keep the path clean
     if "soundcloud.com" in hostname:
-        # SoundCloud URLs are path-based: soundcloud.com/artist/track
-        # Just strip query string junk (UTM params, si, etc.)
         qs = parse_qs(parsed.query)
         # Keep secret_token if present (needed for private tracks)
         clean_params = {}
@@ -104,15 +100,32 @@ def check_dependencies():
         sys.exit(1)
 
 
+def _collect_final_paths(info: dict) -> list[str]:
+    """
+    Pull the final post-processed filepaths out of a yt-dlp info dict.
+    Handles both single-video and playlist shapes.
+    """
+    requested = list(info.get("requested_downloads") or [])
+    for entry in info.get("entries") or []:
+        if isinstance(entry, dict):
+            requested.extend(entry.get("requested_downloads") or [])
+    return [r["filepath"] for r in requested if r.get("filepath")]
+
+
 def download_audio(
     url: str,
     audio_format: str = "mp3",
     output_dir: str = ".",
     sc_auth: str | None = None,
-) -> str:
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+    playlist: bool = False,
+    force: bool = False,
+) -> list[str]:
     """
-    Download the best audio stream from a YouTube or SoundCloud URL
-    and convert it to the requested format. Returns the path to the saved file.
+    Download the best audio stream(s) from a URL and convert to the
+    requested format. Returns the list of saved file paths (one entry
+    for a single track, many for a playlist). Empty list means failure.
     """
     import yt_dlp
 
@@ -121,15 +134,12 @@ def download_audio(
     platform = detect_platform(url)
     platform_label = platform.capitalize() if platform != "unknown" else "URL"
 
-    # Template for the output filename (sanitized title)
-    outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
-
-    # ALAC is packaged in an m4a container; every other codec uses its own ext.
-    ext_by_format = {
-        "mp3": "mp3", "m4a": "m4a", "flac": "flac",
-        "alac": "m4a", "opus": "opus", "wav": "wav",
-    }
-    dl_ext = ext_by_format[audio_format]
+    # Template for the output filename (sanitized title). Playlist mode
+    # groups each track under its playlist's folder.
+    if playlist:
+        outtmpl = os.path.join(output_dir, "%(playlist_title)s", "%(title)s.%(ext)s")
+    else:
+        outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
 
     postprocessor = {
         "key": "FFmpegExtractAudio",
@@ -141,64 +151,72 @@ def download_audio(
         postprocessor["preferredquality"] = "256"   # high AAC
     # flac / alac / wav are lossless; opus keeps source bitrate.
 
+    postprocessors = [
+        postprocessor,
+        {"key": "FFmpegMetadata", "add_metadata": True},
+    ]
+    # WAV containers don't support embedded artwork; skip thumbnail work
+    # entirely to avoid leftover .jpg/.webp files.
+    embed_art = audio_format != "wav"
+    if embed_art:
+        postprocessors.append({"key": "EmbedThumbnail"})
+
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": outtmpl,
-        "noplaylist": True,
+        "noplaylist": not playlist,
         "quiet": False,
         "no_warnings": False,
-        "writethumbnail": True,
-        "postprocessors": [
-            postprocessor,
-            {"key": "FFmpegMetadata", "add_metadata": True},
-            {"key": "EmbedThumbnail"},
-        ],
+        "writethumbnail": embed_art,
+        "postprocessors": postprocessors,
         "keepvideo": False,
     }
+    if force:
+        ydl_opts["overwrites"] = True
 
     # SoundCloud OAuth token (needed for some Go+ / gated tracks).
     # yt-dlp has no dedicated option for this — set the header directly.
     if sc_auth and platform == "soundcloud":
         ydl_opts["http_headers"] = {"Authorization": f"OAuth {sc_auth}"}
+    if cookies:
+        ydl_opts["cookiefile"] = cookies
+    if cookies_from_browser:
+        ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
 
     fmt_label = "ALAC (.m4a)" if audio_format == "alac" else audio_format.upper()
-    print(f"\n[{platform_label}] Fetching audio from: {url}")
+    mode = "playlist" if playlist else "single track"
+    print(f"\n[{platform_label}] Fetching {mode} from: {url}")
     print(f"Format: {fmt_label}  |  Output dir: {os.path.abspath(output_dir)}\n")
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        title = ydl.prepare_filename(info)
-        base, _ = os.path.splitext(title)
-        final_path = f"{base}.{dl_ext}"
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+    except yt_dlp.utils.DownloadError as e:
+        print(f"\n✖  Download failed: {e}")
+        return []
 
-    # If the predicted path doesn't exist, look for a same-basename match.
-    if not os.path.isfile(final_path):
-        expected_base = os.path.basename(base)
-        candidates = [
-            os.path.join(output_dir, f)
-            for f in os.listdir(output_dir)
-            if f.endswith(f".{dl_ext}") and os.path.splitext(f)[0] == expected_base
-        ]
-        if candidates:
-            final_path = candidates[0]
-        else:
-            print("\n⚠  Download appeared to succeed but the output file was not found.")
-            return ""
+    paths = _collect_final_paths(info)
+    if not paths:
+        print("\n⚠  Download succeeded but yt-dlp reported no output path.")
+        return []
 
-    if os.path.isfile(final_path):
-        size_mb = os.path.getsize(final_path) / (1024 * 1024)
-        print(f"\n✔  Saved: {final_path}  ({size_mb:.1f} MB)")
-        return final_path
-
-    print("\n⚠  Download appeared to succeed but the output file was not found.")
-    return ""
+    saved = []
+    for p in paths:
+        if not os.path.isfile(p):
+            print(f"⚠  Expected output missing: {p}")
+            continue
+        size_mb = os.path.getsize(p) / (1024 * 1024)
+        print(f"✔  Saved: {p}  ({size_mb:.1f} MB)")
+        saved.append(p)
+    return saved
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download high-quality audio from YouTube or SoundCloud."
+        description="Download high-quality audio from YouTube, SoundCloud, "
+                    "or any other site yt-dlp supports."
     )
-    parser.add_argument("url", help="YouTube or SoundCloud URL")
+    parser.add_argument("urls", nargs="+", help="One or more source URLs")
     parser.add_argument(
         "-f", "--format",
         choices=["mp3", "m4a", "flac", "alac", "opus", "wav"],
@@ -206,31 +224,56 @@ def main():
         help="Audio format (default: mp3 @ 320 kbps). Use 'alac' for Apple Lossless.",
     )
     parser.add_argument(
-        "-o", "--output",
-        default=".",
+        "-o", "--output", default=".",
         help="Output directory (default: current directory)",
     )
     parser.add_argument(
-        "--sc-auth",
-        default=None,
-        help="SoundCloud OAuth token (required for Go+ / gated tracks)",
+        "--playlist", action="store_true",
+        help="Download the full playlist (default: single track only). "
+             "Saves under <output>/<playlist_title>/.",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing files (default: skip if already present).",
+    )
+    parser.add_argument(
+        "--cookies", default=None, metavar="FILE",
+        help="Path to a Netscape-format cookies.txt for gated content.",
+    )
+    parser.add_argument(
+        "--cookies-from-browser", default=None, metavar="BROWSER",
+        help="Pull cookies from a local browser (chrome, safari, firefox, edge, ...).",
+    )
+    parser.add_argument(
+        "--sc-auth", default=None, metavar="TOKEN",
+        help="SoundCloud OAuth token (alternative to --cookies for gated tracks).",
     )
     args = parser.parse_args()
 
     check_dependencies()
-    clean_url = sanitize_url(args.url)
-    if clean_url != args.url:
-        print(f"Sanitized URL → {clean_url}")
-    path = download_audio(
-        clean_url,
-        audio_format=args.format,
-        output_dir=args.output,
-        sc_auth=args.sc_auth,
-    )
 
-    if path:
-        print(f"\nDone. File is ready at:\n  file://{os.path.abspath(path)}")
-    else:
+    any_failed = False
+    for url in args.urls:
+        clean_url = sanitize_url(url)
+        if clean_url != url:
+            print(f"Sanitized URL → {clean_url}")
+        saved = download_audio(
+            clean_url,
+            audio_format=args.format,
+            output_dir=args.output,
+            sc_auth=args.sc_auth,
+            cookies=args.cookies,
+            cookies_from_browser=args.cookies_from_browser,
+            playlist=args.playlist,
+            force=args.force,
+        )
+        if saved:
+            for p in saved:
+                print(f"  → file://{os.path.abspath(p)}")
+        else:
+            any_failed = True
+
+    if any_failed:
         sys.exit(1)
 
 
