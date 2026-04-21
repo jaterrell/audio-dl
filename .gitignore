@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env*
+
+# macOS
+.DS_Store
+
+# Downloaded audio / artwork
+*.mp3
+*.m4a
+*.flac
+*.opus
+*.wav
+*.webp
+*.jpg
