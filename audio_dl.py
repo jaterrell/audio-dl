@@ -19,7 +19,6 @@ import argparse
 import sys
 import os
 import shutil
-import subprocess
 
 
 def detect_platform(url: str) -> str:
@@ -49,9 +48,24 @@ def sanitize_url(url: str) -> str:
     # YouTube — rebuild cleanly to drop junk params
     if "youtube.com" in hostname or "youtu.be" in hostname:
         qs = parse_qs(parsed.query)
-        clean_params = {}
-        if "v" in qs:
-            clean_params["v"] = qs["v"][0]
+        path_parts = [p for p in parsed.path.split("/") if p]
+
+        # Video ID lives in different places depending on URL shape:
+        #   youtu.be/<id>, youtube.com/shorts/<id>, youtube.com/embed/<id>,
+        #   youtube.com/watch?v=<id>
+        video_id = None
+        if "youtu.be" in hostname and path_parts:
+            video_id = path_parts[0]
+        elif path_parts and path_parts[0] in ("shorts", "embed", "live") and len(path_parts) > 1:
+            video_id = path_parts[1]
+        elif "v" in qs:
+            video_id = qs["v"][0]
+
+        if not video_id:
+            # Not a recognizable single-video URL — hand it back untouched.
+            return url
+
+        clean_params = {"v": video_id}
         if "t" in qs:
             clean_params["t"] = qs["t"][0]
         if "list" in qs:
@@ -90,31 +104,6 @@ def check_dependencies():
         sys.exit(1)
 
 
-def convert_to_alac(flac_path: str) -> str:
-    """
-    Convert a FLAC file to ALAC (.m4a) using ffmpeg.
-    Preserves metadata. Returns the path to the .m4a file.
-    """
-    alac_path = os.path.splitext(flac_path)[0] + ".m4a"
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", flac_path,
-        "-acodec", "alac",        # Apple Lossless codec
-        "-vcodec", "copy",        # preserve embedded artwork
-        "-map", "0",              # carry all streams (audio + artwork)
-        "-map_metadata", "0",     # carry all metadata tags
-        alac_path,
-    ]
-    print(f"Converting to ALAC → {os.path.basename(alac_path)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"ERROR: ffmpeg ALAC conversion failed:\n{result.stderr}")
-        return ""
-    # Remove the intermediate FLAC
-    os.remove(flac_path)
-    return alac_path
-
-
 def download_audio(
     url: str,
     audio_format: str = "mp3",
@@ -135,81 +124,66 @@ def download_audio(
     # Template for the output filename (sanitized title)
     outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
 
-    # ALAC isn't directly supported by yt-dlp — download as FLAC first,
-    # then convert to ALAC in a second step.
-    is_alac = audio_format == "alac"
-    dl_format = "flac" if is_alac else audio_format
-    dl_ext = "flac" if is_alac else audio_format
+    # ALAC is packaged in an m4a container; every other codec uses its own ext.
+    ext_by_format = {
+        "mp3": "mp3", "m4a": "m4a", "flac": "flac",
+        "alac": "m4a", "opus": "opus", "wav": "wav",
+    }
+    dl_ext = ext_by_format[audio_format]
 
-    # Quality mapping per format
     postprocessor = {
         "key": "FFmpegExtractAudio",
-        "preferredcodec": dl_format,
+        "preferredcodec": audio_format,
     }
-    if dl_format == "mp3":
+    if audio_format == "mp3":
         postprocessor["preferredquality"] = "320"   # max CBR for mp3
-    elif dl_format == "m4a":
+    elif audio_format == "m4a":
         postprocessor["preferredquality"] = "256"   # high AAC
-    # flac / wav are lossless — no quality knob needed
-    # opus keeps the source bitrate
+    # flac / alac / wav are lossless; opus keeps source bitrate.
 
     ydl_opts = {
-        "format": "bestaudio/best",          # highest quality audio stream
+        "format": "bestaudio/best",
         "outtmpl": outtmpl,
-        "noplaylist": True,                  # single track only
+        "noplaylist": True,
         "quiet": False,
         "no_warnings": False,
-        "embed_metadata": True,              # write ID3 / Vorbis tags
-        "writethumbnail": True,              # download thumbnail / artwork
+        "writethumbnail": True,
         "postprocessors": [
             postprocessor,
-            {
-                "key": "FFmpegMetadata",     # embed metadata
-                "add_metadata": True,
-            },
-            {
-                "key": "EmbedThumbnail",     # embed album art
-            },
+            {"key": "FFmpegMetadata", "add_metadata": True},
+            {"key": "EmbedThumbnail"},
         ],
         "keepvideo": False,
     }
 
-    # SoundCloud OAuth token (needed for some Go+ / gated tracks)
+    # SoundCloud OAuth token (needed for some Go+ / gated tracks).
+    # yt-dlp has no dedicated option for this — set the header directly.
     if sc_auth and platform == "soundcloud":
-        ydl_opts["soundcloud_oauth_token"] = sc_auth
+        ydl_opts["http_headers"] = {"Authorization": f"OAuth {sc_auth}"}
 
-    fmt_label = "ALAC (.m4a)" if is_alac else audio_format.upper()
+    fmt_label = "ALAC (.m4a)" if audio_format == "alac" else audio_format.upper()
     print(f"\n[{platform_label}] Fetching audio from: {url}")
     print(f"Format: {fmt_label}  |  Output dir: {os.path.abspath(output_dir)}\n")
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         title = ydl.prepare_filename(info)
-        # The final filename has the converted extension
         base, _ = os.path.splitext(title)
         final_path = f"{base}.{dl_ext}"
 
-    # If the predicted path doesn't exist, scan for it
+    # If the predicted path doesn't exist, look for a same-basename match.
     if not os.path.isfile(final_path):
+        expected_base = os.path.basename(base)
         candidates = [
             os.path.join(output_dir, f)
             for f in os.listdir(output_dir)
-            if f.endswith(f".{dl_ext}")
+            if f.endswith(f".{dl_ext}") and os.path.splitext(f)[0] == expected_base
         ]
         if candidates:
-            final_path = max(candidates, key=os.path.getmtime)
+            final_path = candidates[0]
         else:
             print("\n⚠  Download appeared to succeed but the output file was not found.")
             return ""
-
-    # Convert FLAC → ALAC if requested
-    if is_alac:
-        final_path = convert_to_alac(final_path)
-        if not final_path:
-            return ""
-
-    # Report the final output extension for display
-    out_ext = "m4a" if is_alac else audio_format
 
     if os.path.isfile(final_path):
         size_mb = os.path.getsize(final_path) / (1024 * 1024)
