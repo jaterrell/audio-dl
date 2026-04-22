@@ -17,6 +17,7 @@ import argparse
 import os
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def detect_platform(url: str) -> str:
@@ -121,6 +122,7 @@ def download_audio(
     cookies_from_browser: str | None = None,
     playlist: bool = False,
     force: bool = False,
+    concurrent_fragments: int = 4,
 ) -> list[str]:
     """
     Download the best audio stream(s) from a URL and convert to the
@@ -170,6 +172,7 @@ def download_audio(
         "writethumbnail": embed_art,
         "postprocessors": postprocessors,
         "keepvideo": False,
+        "concurrent_fragment_downloads": concurrent_fragments,
     }
     if force:
         ydl_opts["overwrites"] = True
@@ -248,12 +251,21 @@ def main():
         "--sc-auth", default=None, metavar="TOKEN",
         help="SoundCloud OAuth token (alternative to --cookies for gated tracks).",
     )
+    parser.add_argument(
+        "-j", "--jobs", type=int, default=1, metavar="N",
+        help="Number of URLs to download in parallel (default: 1). "
+             "Use -j4 for batch downloads.",
+    )
+    parser.add_argument(
+        "--fragments", type=int, default=4, metavar="N",
+        help="Parallel fragment downloads per track (default: 4). "
+             "Higher values speed up DASH/HLS streams on fast connections.",
+    )
     args = parser.parse_args()
 
     check_dependencies()
 
-    any_failed = False
-    for url in args.urls:
+    def _download_one(url: str) -> tuple[str, list[str]]:
         clean_url = sanitize_url(url)
         if clean_url != url:
             print(f"Sanitized URL → {clean_url}")
@@ -266,12 +278,20 @@ def main():
             cookies_from_browser=args.cookies_from_browser,
             playlist=args.playlist,
             force=args.force,
+            concurrent_fragments=args.fragments,
         )
-        if saved:
-            for p in saved:
-                print(f"  → file://{os.path.abspath(p)}")
-        else:
-            any_failed = True
+        return url, saved
+
+    any_failed = False
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        futures = {pool.submit(_download_one, url): url for url in args.urls}
+        for future in as_completed(futures):
+            url, saved = future.result()
+            if saved:
+                for p in saved:
+                    print(f"  → file://{os.path.abspath(p)}")
+            else:
+                any_failed = True
 
     if any_failed:
         sys.exit(1)
