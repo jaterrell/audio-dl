@@ -12,17 +12,19 @@ Requirements:
     pip install yt-dlp
     ffmpeg must be installed (for post-processing / conversion)
 """
+from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlparse, parse_qs, urlencode
 
 
 def detect_platform(url: str) -> str:
     """Identify the source platform from the URL."""
-    from urllib.parse import urlparse
     hostname = urlparse(url).hostname or ""
     if "youtube.com" in hostname or "youtu.be" in hostname:
         return "youtube"
@@ -36,8 +38,6 @@ def sanitize_url(url: str) -> str:
     Strip backslash escapes the shell may have injected and normalize
     the URL so yt-dlp receives a clean link.
     """
-    from urllib.parse import urlparse, parse_qs, urlencode
-
     # Remove any backslashes (zsh / bash escape artifacts)
     url = url.replace("\\", "")
 
@@ -93,9 +93,7 @@ def check_dependencies():
         print("  Windows: https://ffmpeg.org/download.html")
         sys.exit(1)
 
-    try:
-        import yt_dlp  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("yt_dlp") is None:
         print("ERROR: yt-dlp is not installed.")
         print("  Install it with:  pip install yt-dlp")
         sys.exit(1)
@@ -113,7 +111,7 @@ def _collect_final_paths(info: dict) -> list[str]:
     return [r["filepath"] for r in requested if r.get("filepath")]
 
 
-def download_audio(
+def download_audio(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
     url: str,
     audio_format: str = "mp3",
     output_dir: str = ".",
@@ -129,7 +127,7 @@ def download_audio(
     requested format. Returns the list of saved file paths (one entry
     for a single track, many for a playlist). Empty list means failure.
     """
-    import yt_dlp
+    import yt_dlp  # pylint: disable=import-outside-toplevel
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -215,6 +213,7 @@ def download_audio(
 
 
 def main():
+    """Parse CLI arguments and run downloads."""
     parser = argparse.ArgumentParser(
         description="Download high-quality audio from YouTube, SoundCloud, "
                     "or any other site yt-dlp supports."
