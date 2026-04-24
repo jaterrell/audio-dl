@@ -16,3 +16,4 @@ venv/
 *.wav
 *.webp
 *.jpg
+.gstack/
