@@ -24,19 +24,22 @@ from urllib.parse import urlparse, parse_qs, urlencode
 
 
 def detect_platform(url: str) -> str:
-    """Identify the source platform from the URL."""
+    """Identify the source platform from the URL: youtube, soundcloud, bunnystream, or unknown."""
     hostname = urlparse(url).hostname or ""
     if "youtube.com" in hostname or "youtu.be" in hostname:
         return "youtube"
     if "soundcloud.com" in hostname:
         return "soundcloud"
+    if hostname == "mediadelivery.net" or hostname.endswith(".mediadelivery.net"):
+        return "bunnystream"
     return "unknown"
 
 
 def sanitize_url(url: str) -> str:
     """
     Strip backslash escapes the shell may have injected and normalize
-    the URL so yt-dlp receives a clean link.
+    the URL so yt-dlp receives a clean link. Handles YouTube, SoundCloud,
+    and Bunny Stream (mediadelivery.net) URLs specially; others pass through.
     """
     # Remove any backslashes (zsh / bash escape artifacts)
     url = url.replace("\\", "")
@@ -80,6 +83,18 @@ def sanitize_url(url: str) -> str:
             clean_params["secret_token"] = qs["secret_token"][0]
         query = f"?{urlencode(clean_params)}" if clean_params else ""
         return f"https://soundcloud.com{parsed.path}{query}"
+
+    # Bunny Stream — the path carries all identity info (library_id + video guid);
+    # player-UI params are stripped; token/expires are preserved for access-controlled videos.
+    if hostname == "mediadelivery.net" or hostname.endswith(".mediadelivery.net"):
+        qs = parse_qs(parsed.query)
+        clean_params = {}
+        if "token" in qs:
+            clean_params["token"] = qs["token"][0]
+        if "expires" in qs:
+            clean_params["expires"] = qs["expires"][0]
+        query = f"?{urlencode(clean_params)}" if clean_params else ""
+        return f"https://{parsed.hostname}{parsed.path}{query}"
 
     return url
 
