@@ -30,6 +30,8 @@ def detect_platform(url: str) -> str:
         return "youtube"
     if "soundcloud.com" in hostname:
         return "soundcloud"
+    if "mediadelivery.net" in hostname:
+        return "bunnystream"
     return "unknown"
 
 
@@ -80,6 +82,11 @@ def sanitize_url(url: str) -> str:
             clean_params["secret_token"] = qs["secret_token"][0]
         query = f"?{urlencode(clean_params)}" if clean_params else ""
         return f"https://soundcloud.com{parsed.path}{query}"
+
+    # Bunny Stream — the path carries all identity info (library_id + video guid);
+    # query params are player-UI preferences only (autoplay, muted, responsive, …).
+    if "mediadelivery.net" in hostname:
+        return f"https://{parsed.netloc}{parsed.path}"
 
     return url
 
