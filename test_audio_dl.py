@@ -1,5 +1,5 @@
+# pylint: disable=missing-function-docstring,missing-class-docstring
 """Tests for audio_dl.py — sanitize_url and detect_platform."""
-import pytest
 from audio_dl import detect_platform, sanitize_url
 
 
@@ -137,6 +137,10 @@ class TestSanitizeUrlBunnyStream:
 # ---------------------------------------------------------------------------
 
 class TestSanitizeUrlUnknown:
-    def test_unknown_url_returned_unchanged(self):
+    def test_unknown_url_with_params_returned_unchanged(self):
         url = "https://example.com/audio.mp3?token=xyz"
+        assert sanitize_url(url) == url
+
+    def test_unknown_url_no_params_returned_unchanged(self):
+        url = "https://example.com/audio.mp3"
         assert sanitize_url(url) == url
