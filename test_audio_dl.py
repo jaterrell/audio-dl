@@ -30,6 +30,16 @@ class TestDetectPlatform:
     def test_unknown(self):
         assert detect_platform("https://example.com/audio.mp3") == "unknown"
 
+    def test_lookalike_domain_not_bunnystream(self):
+        # 'evilmediadelivery.net' contains 'mediadelivery.net' as a substring
+        # but is not a subdomain of it — must return unknown
+        assert detect_platform("https://evilmediadelivery.net/embed/1/2") == "unknown"
+
+    def test_subdomain_spoof_not_bunnystream(self):
+        # 'mediadelivery.net.evil.com' has mediadelivery.net as a sub-string
+        # of a different hostname — must return unknown
+        assert detect_platform("https://mediadelivery.net.evil.com/embed/1/2") == "unknown"
+
 
 # ---------------------------------------------------------------------------
 # sanitize_url — YouTube
@@ -102,6 +112,24 @@ class TestSanitizeUrlBunnyStream:
     def test_iframe_subdomain_preserved(self):
         url = "https://iframe.mediadelivery.net/embed/12345/some-guid?autoplay=true"
         assert sanitize_url(url) == "https://iframe.mediadelivery.net/embed/12345/some-guid"
+
+    def test_token_auth_params_preserved(self):
+        # Access-controlled Bunny Stream videos require token + expires params
+        url = self.EMBED_URL + "?token=abc123&expires=9999999999&autoplay=true"
+        assert sanitize_url(url) == self.EMBED_URL + "?token=abc123&expires=9999999999"
+
+    def test_credentials_not_leaked_in_output(self):
+        # parsed.netloc includes user:pass@ — must not appear in sanitized URL
+        url = "https://user:pass@player.mediadelivery.net/embed/577374/some-guid"
+        result = sanitize_url(url)
+        assert "user" not in result
+        assert "pass" not in result
+        assert result == "https://player.mediadelivery.net/embed/577374/some-guid"
+
+    def test_lookalike_domain_not_sanitized(self):
+        # evilmediadelivery.net should pass through unchanged, not enter the Bunny branch
+        url = "https://evilmediadelivery.net/embed/1/2?autoplay=true"
+        assert sanitize_url(url) == url
 
 
 # ---------------------------------------------------------------------------
