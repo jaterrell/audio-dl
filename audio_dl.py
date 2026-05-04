@@ -5,8 +5,16 @@ anywhere else yt-dlp supports.
 
 Usage:
     python audio_dl.py <url> [<url> ...] [--format mp3|m4a|flac|alac|opus|wav] [--output DIR]
-    python audio_dl.py <url> --cookies-from-browser chrome
+    python audio_dl.py <url> --cookies-from-browser chrome   # pull live cookies from browser
+    python audio_dl.py <url> --cookies cookies.txt           # Netscape cookies file
+    python audio_dl.py <url> --sc-auth <token>               # SoundCloud OAuth token
     python audio_dl.py <playlist_url> --playlist
+
+Credentials for gated / access-controlled content:
+    --cookies-from-browser BROWSER  Use cookies from chrome/safari/firefox/edge (most sites)
+    --cookies FILE                  Netscape-format cookies.txt exported from a browser
+    --sc-auth TOKEN                 SoundCloud Go+/private tracks (OAuth token from DevTools)
+    Bunny Stream token URLs         Pass the full URL with ?token=…&expires=… — preserved automatically
 
 Requirements:
     pip install yt-dlp
