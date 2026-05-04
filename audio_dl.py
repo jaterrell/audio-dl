@@ -23,6 +23,8 @@ Requirements:
 """
 from __future__ import annotations
 
+__version__ = "1.0.0"
+
 import argparse
 import importlib.util
 import os
@@ -242,6 +244,7 @@ def main():
         description="Download high-quality audio from YouTube, SoundCloud, "
                     "or any other site yt-dlp supports."
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("urls", nargs="+", help="One or more source URLs")
     parser.add_argument(
         "-f", "--format",

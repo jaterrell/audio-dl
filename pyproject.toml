@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "audio-dl"
+version = "1.0.0"
+description = "Download high-quality audio from YouTube, SoundCloud, Bunny Stream, or anywhere yt-dlp supports."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["yt-dlp"]
+
+[project.scripts]
+audio-dl = "audio_dl:main"
+
+[tool.setuptools]
+py-modules = ["audio_dl"]
