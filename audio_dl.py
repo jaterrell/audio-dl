@@ -14,7 +14,8 @@ Credentials for gated / access-controlled content:
     --cookies-from-browser BROWSER  Use cookies from chrome/safari/firefox/edge (most sites)
     --cookies FILE                  Netscape-format cookies.txt exported from a browser
     --sc-auth TOKEN                 SoundCloud Go+/private tracks (OAuth token from DevTools)
-    Bunny Stream token URLs         Pass the full URL with ?token=…&expires=… — preserved automatically
+    Bunny Stream token URLs         Pass the full URL with ?token=…&expires=…
+                                    (sanitize_url preserves these automatically)
 
 Requirements:
     pip install yt-dlp
