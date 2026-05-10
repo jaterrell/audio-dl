@@ -351,3 +351,13 @@ class TestReveal:
             assert called == [((["open", "-R", path],), {"check": False})]
         finally:
             del JOBS["manual"]
+
+
+# ---------------------------------------------------------------------------
+# GET /jobs/{id}/events — 404
+# ---------------------------------------------------------------------------
+
+class TestSseUnknownJob:
+    def test_unknown_job_404(self):
+        r = client.get("/jobs/does-not-exist/events")
+        assert r.status_code == 404
