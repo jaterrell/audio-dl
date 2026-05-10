@@ -114,10 +114,63 @@ _INDEX_HTML = """<!doctype html>
 app = FastAPI(title="audio-dl-ui", version=__version__)
 
 
+class JobRequest(BaseModel):
+    """Request body for POST /jobs."""
+
+    urls: str
+    format: str
+    output_dir: str
+    playlist: bool = False
+    force: bool = False
+    fragments: int = 4
+    jobs: int = 1
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """Return the index HTML page."""
     return HTMLResponse(_INDEX_HTML)
+
+
+@app.post("/jobs")
+async def post_jobs(req: JobRequest) -> dict:
+    """Validate the request, register a JobState, return the job_id."""
+    # Parse URLs (whitespace-separated, drop blanks).
+    urls = [u.strip() for u in req.urls.split() if u.strip()]
+    if not urls:
+        raise HTTPException(400, "At least one URL is required.")
+
+    if req.format not in ALL_FORMATS:
+        raise HTTPException(400, f"Unknown format: {req.format!r}. Must be one of {ALL_FORMATS}.")
+
+    if not 1 <= req.jobs <= 8:
+        raise HTTPException(400, "jobs must be in 1..8.")
+
+    if not 1 <= req.fragments <= 16:
+        raise HTTPException(400, "fragments must be in 1..16.")
+
+    output_dir = os.path.expanduser(req.output_dir)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(400, f"output_dir not writable: {e}") from e
+
+    job_id = uuid.uuid4().hex
+    job = JobState(
+        id=job_id,
+        media_format=req.format,
+        output_dir=output_dir,
+        playlist=req.playlist,
+        force=req.force,
+        fragments=req.fragments,
+        jobs=req.jobs,
+        url_states={u: UrlState(url=u) for u in urls},
+        queue=queue.Queue(),
+    )
+    JOBS[job_id] = job
+    # Worker startup lives in Task 7. For now, returning the id is enough
+    # for validation tests to pass.
+    return {"job_id": job_id}
 
 
 # ---------------------------------------------------------------------------
