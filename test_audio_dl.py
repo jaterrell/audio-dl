@@ -343,3 +343,35 @@ class TestBuildYdlOptsCommon:
             concurrent_fragments=8, platform="youtube",
         )
         assert opts["concurrent_fragment_downloads"] == 8
+
+
+# ---------------------------------------------------------------------------
+# _build_ydl_opts — progress_hooks
+# ---------------------------------------------------------------------------
+
+class TestBuildYdlOptsProgressHooks:
+    def _opts(self, **kwargs):
+        defaults = {
+            "media_format": "mp3",
+            "output_dir": ".",
+            "playlist": False,
+            "force": False,
+            "concurrent_fragments": 4,
+            "platform": "youtube",
+        }
+        defaults.update(kwargs)
+        return _build_ydl_opts(**defaults)
+
+    def test_progress_hooks_passed_through(self):
+        def hook(_d):
+            pass
+        opts = self._opts(progress_hooks=[hook])
+        assert opts["progress_hooks"] == [hook]
+
+    def test_progress_hooks_absent_when_none(self):
+        opts = self._opts(progress_hooks=None)
+        assert "progress_hooks" not in opts
+
+    def test_progress_hooks_omitted_default(self):
+        opts = self._opts()
+        assert "progress_hooks" not in opts

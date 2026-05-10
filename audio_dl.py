@@ -31,6 +31,7 @@ from __future__ import annotations
 __version__ = "1.1.0"
 
 import argparse
+from collections.abc import Callable
 import importlib.util
 import os
 import shutil
@@ -147,7 +148,7 @@ VIDEO_FORMATS = ("mp4",)
 ALL_FORMATS = AUDIO_FORMATS + VIDEO_FORMATS
 
 
-def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals
+def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals,too-many-branches
     *,
     media_format: str,
     output_dir: str,
@@ -158,6 +159,7 @@ def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals
     sc_auth: str | None = None,
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
+    progress_hooks: list[Callable[[dict], None]] | None = None,
 ) -> dict:
     """
     Build the yt-dlp options dict for the requested media format.
@@ -230,6 +232,8 @@ def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals
         opts["cookiefile"] = cookies
     if cookies_from_browser:
         opts["cookiesfrombrowser"] = (cookies_from_browser,)
+    if progress_hooks:
+        opts["progress_hooks"] = progress_hooks
 
     return opts
 
@@ -253,6 +257,7 @@ def download_media(  # pylint: disable=too-many-arguments,too-many-positional-ar
     playlist: bool = False,
     force: bool = False,
     concurrent_fragments: int = 4,
+    progress_hooks: list[Callable[[dict], None]] | None = None,
 ) -> list[str]:
     """
     Download from ``url`` in the requested ``media_format``.
@@ -279,6 +284,7 @@ def download_media(  # pylint: disable=too-many-arguments,too-many-positional-ar
         sc_auth=sc_auth,
         cookies=cookies,
         cookies_from_browser=cookies_from_browser,
+        progress_hooks=progress_hooks,
     )
 
     mode = "playlist" if playlist else "single track"
