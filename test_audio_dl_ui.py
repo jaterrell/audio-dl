@@ -1,4 +1,5 @@
 # pylint: disable=missing-function-docstring,missing-class-docstring,too-few-public-methods
+# pylint: disable=import-outside-toplevel,reimported,redefined-outer-name,protected-access,unused-argument
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
 import json
 import threading
