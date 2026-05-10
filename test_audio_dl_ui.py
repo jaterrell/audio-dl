@@ -2,7 +2,7 @@
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
 from fastapi.testclient import TestClient
 
-from audio_dl_ui import app
+from audio_dl_ui import app, JOBS
 
 
 client = TestClient(app)
@@ -74,3 +74,32 @@ class TestPostJobsValidation:
         r = client.post("/jobs", json=_valid_body(output_dir="/dev/null/cant-make-this"))
         assert r.status_code == 400
         assert "output" in r.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# POST /jobs — happy path (registers JobState)
+# ---------------------------------------------------------------------------
+
+class TestPostJobsHappyPath:
+    def test_returns_job_id(self, tmp_path):
+        body = _valid_body(output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body)
+        assert r.status_code == 200
+        data = r.json()
+        assert "job_id" in data
+        assert isinstance(data["job_id"], str) and len(data["job_id"]) >= 16
+
+    def test_registers_in_jobs_dict(self, tmp_path):
+        body = _valid_body(
+            urls="https://youtu.be/AAA https://youtu.be/BBB",
+            output_dir=str(tmp_path),
+            jobs=2,
+        )
+        r = client.post("/jobs", json=body)
+        job_id = r.json()["job_id"]
+        job = JOBS[job_id]
+        assert job.media_format == "mp3"
+        assert job.jobs == 2
+        assert set(job.url_states.keys()) == {"https://youtu.be/AAA", "https://youtu.be/BBB"}
+        for state in job.url_states.values():
+            assert state.status == "pending"
