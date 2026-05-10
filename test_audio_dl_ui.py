@@ -1,6 +1,7 @@
 # pylint: disable=missing-function-docstring,missing-class-docstring,too-few-public-methods
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
 import json
+import threading
 import time
 
 from fastapi.testclient import TestClient
@@ -252,3 +253,54 @@ class TestSseHappyPath:
         last = events[-1]
         assert last["summary"]["completed"] == 1
         assert last["summary"]["failed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# POST /jobs/{id}/cancel
+# ---------------------------------------------------------------------------
+
+class TestCancel:
+    def test_unknown_job_404(self):
+        r = client.post("/jobs/does-not-exist/cancel")
+        assert r.status_code == 404
+
+    def test_sets_flag_and_calls_shutdown(self, tmp_path, monkeypatch):
+        import audio_dl_ui as ui
+
+        # Mock download_media to block until cancelled.
+        started = threading.Event()
+        cancelled = threading.Event()
+
+        def fake_download(url, *, progress_hooks=None, **_kw):
+            started.set()
+            # Poll the hook repeatedly until it raises _Cancelled or 5s elapses.
+            hook = progress_hooks[0]
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    hook({"status": "downloading", "downloaded_bytes": 1,
+                          "total_bytes": 100})
+                except ui._Cancelled:
+                    cancelled.set()
+                    raise
+                time.sleep(0.05)
+            return ["/never"]
+
+        monkeypatch.setattr(ui, "download_media", fake_download)
+
+        body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body)
+        job_id = r.json()["job_id"]
+
+        # Wait for worker to start, then cancel.
+        assert started.wait(timeout=2.0), "fake_download never started"
+        r2 = client.post(f"/jobs/{job_id}/cancel")
+        assert r2.status_code == 200
+        assert r2.json() == {"ok": True}
+
+        # The hook should raise _Cancelled within a tick.
+        assert cancelled.wait(timeout=2.0), "hook never raised _Cancelled"
+
+        # JOBS[job_id].cancelled is True.
+        from audio_dl_ui import JOBS
+        assert JOBS[job_id].cancelled is True

@@ -367,6 +367,18 @@ async def get_events(job_id: str) -> StreamingResponse:
     )
 
 
+@app.post("/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str) -> dict:
+    """Cancel a job: set flag and shut down the executor."""
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"unknown job_id: {job_id}")
+    job.cancelled = True
+    if job.executor is not None:
+        job.executor.shutdown(wait=False, cancel_futures=True)
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
