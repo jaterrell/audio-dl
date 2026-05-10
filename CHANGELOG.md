@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.2.0 — 2026-05-10
+
+### Added
+- **Web UI** (`audio-dl-ui`). One-page browser UI for downloads — paste URLs,
+  pick a format, click Download, watch real-time progress, click to reveal
+  the saved file in Finder. Parallel jobs (1–8) with a slider, whole-job
+  Cancel button. Sets up the Phase-3 `.app` bundle.
+- Optional `progress_hooks` parameter on `download_media` (used by the UI;
+  CLI behavior unchanged).
+- `[project.optional-dependencies] ui = ["fastapi", "uvicorn[standard]"]` —
+  install with `pipx install 'audio-dl[ui]'`.
+
+### Changed
+- `pyproject.toml`: `py-modules = ["audio_dl", "audio_dl_ui"]`; new
+  `audio-dl-ui` script entry.
+
 ## [1.1.0] - 2026-05-10
 
 ### Added

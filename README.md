@@ -37,3 +37,25 @@ python audio_dl.py <url> --fragments 8                    # 8 parallel fragments
 ```
 
 `--format` is the single switch for output type. Audio formats (`mp3`, `m4a`, `flac`, `alac`, `opus`, `wav`) extract the audio stream; video formats (`mp4`) merge bestvideo+bestaudio into a single file. Default is mp3 @ 320 kbps. If installed via `pipx install .`, use `audio-dl` in place of `python audio_dl.py`.
+
+## Web UI (optional)
+
+Prefer a browser to a terminal? Install the UI extra and run the launcher:
+
+```bash
+pipx install 'audio-dl[ui]'   # or: pip install '.[ui]'
+audio-dl-ui                   # opens http://127.0.0.1:8000 in your browser
+```
+
+Paste URLs, pick a format, click Download. Live progress per URL, parallel
+jobs slider (1–8), whole-job Cancel, click to reveal saved files in Finder.
+
+```bash
+audio-dl-ui --port 9000              # custom port
+audio-dl-ui --output-dir ~/Music     # change the default output dir shown
+audio-dl-ui --no-browser             # don't auto-open the browser
+```
+
+Bind defaults to `127.0.0.1` — no network exposure. Credentials for gated
+content (cookies, SoundCloud OAuth) aren't surfaced in the UI; use the CLI
+for those.
