@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
-audio_dl.py — Download high-quality audio from YouTube, SoundCloud, and
-anywhere else yt-dlp supports.
+audio_dl.py — Download high-quality audio (or video) from YouTube,
+SoundCloud, and anywhere else yt-dlp supports.
+
+The output format chosen via ``--format`` decides everything: audio
+formats (mp3, m4a, flac, alac, opus, wav) extract the audio stream;
+video formats (mp4) merge bestvideo+bestaudio into a single file.
 
 Usage:
-    python audio_dl.py <url> [<url> ...] [--format mp3|m4a|flac|alac|opus|wav] [--output DIR]
+    python audio_dl.py <url> [<url> ...] [--format mp3|m4a|flac|alac|opus|wav|mp4] [--output DIR]
     python audio_dl.py <url> --cookies-from-browser chrome   # pull live cookies from browser
     python audio_dl.py <url> --cookies cookies.txt           # Netscape cookies file
     python audio_dl.py <url> --sc-auth <token>               # SoundCloud OAuth token
     python audio_dl.py <playlist_url> --playlist
+    python audio_dl.py <url> --format mp4                    # download video instead of audio
 
 Credentials for gated / access-controlled content:
     --cookies-from-browser BROWSER  Use cookies from chrome/safari/firefox/edge (most sites)
@@ -137,29 +142,30 @@ def _collect_final_paths(info: dict) -> list[str]:
     return [r["filepath"] for r in requested if r.get("filepath")]
 
 
-def download_audio(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
-    url: str,
-    audio_format: str = "mp3",
-    output_dir: str = ".",
+AUDIO_FORMATS = ("mp3", "m4a", "flac", "alac", "opus", "wav")
+VIDEO_FORMATS = ("mp4",)
+ALL_FORMATS = AUDIO_FORMATS + VIDEO_FORMATS
+
+
+def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals
+    *,
+    media_format: str,
+    output_dir: str,
+    playlist: bool,
+    force: bool,
+    concurrent_fragments: int,
+    platform: str,
     sc_auth: str | None = None,
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
-    playlist: bool = False,
-    force: bool = False,
-    concurrent_fragments: int = 4,
-) -> list[str]:
+) -> dict:
     """
-    Download the best audio stream(s) from a URL and convert to the
-    requested format. Returns the list of saved file paths (one entry
-    for a single track, many for a playlist). Empty list means failure.
+    Build the yt-dlp options dict for the requested media format.
+
+    Pure: no I/O, no yt-dlp import. The format string is the single
+    source of truth — audio formats trigger ``FFmpegExtractAudio``;
+    video formats trigger video+audio merge into the chosen container.
     """
-    import yt_dlp  # pylint: disable=import-outside-toplevel
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    platform = detect_platform(url)
-    platform_label = platform.capitalize() if platform != "unknown" else "URL"
-
     # Template for the output filename (sanitized title). Playlist mode
     # groups each track under its playlist's folder.
     if playlist:
@@ -167,28 +173,41 @@ def download_audio(  # pylint: disable=too-many-arguments,too-many-positional-ar
     else:
         outtmpl = os.path.join(output_dir, "%(title)s.%(ext)s")
 
-    postprocessor = {
-        "key": "FFmpegExtractAudio",
-        "preferredcodec": audio_format,
-    }
-    if audio_format == "mp3":
-        postprocessor["preferredquality"] = "320"   # max CBR for mp3
-    elif audio_format == "m4a":
-        postprocessor["preferredquality"] = "256"   # high AAC
-    # flac / alac / wav are lossless; opus keeps source bitrate.
+    is_video = media_format in VIDEO_FORMATS
 
-    postprocessors = [
-        postprocessor,
-        {"key": "FFmpegMetadata", "add_metadata": True},
-    ]
-    # WAV containers don't support embedded artwork; skip thumbnail work
-    # entirely to avoid leftover .jpg/.webp files.
-    embed_art = audio_format != "wav"
-    if embed_art:
-        postprocessors.append({"key": "EmbedThumbnail"})
+    if is_video:
+        # Video mode: keep video stream, merge bestvideo+bestaudio into the
+        # chosen container. mp4 supports embedded metadata + artwork.
+        postprocessors = [
+            {"key": "FFmpegMetadata", "add_metadata": True},
+            {"key": "EmbedThumbnail"},
+        ]
+        ydl_format = "bestvideo*+bestaudio/best"
+        embed_art = True
+    else:
+        postprocessor = {
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": media_format,
+        }
+        if media_format == "mp3":
+            postprocessor["preferredquality"] = "320"   # max CBR for mp3
+        elif media_format == "m4a":
+            postprocessor["preferredquality"] = "256"   # high AAC
+        # flac / alac / wav are lossless; opus keeps source bitrate.
 
-    ydl_opts = {
-        "format": "bestaudio/best",
+        postprocessors = [
+            postprocessor,
+            {"key": "FFmpegMetadata", "add_metadata": True},
+        ]
+        # WAV containers don't support embedded artwork; skip thumbnail work
+        # entirely to avoid leftover .jpg/.webp files.
+        embed_art = media_format != "wav"
+        if embed_art:
+            postprocessors.append({"key": "EmbedThumbnail"})
+        ydl_format = "bestaudio/best"
+
+    opts: dict = {
+        "format": ydl_format,
         "outtmpl": outtmpl,
         "noplaylist": not playlist,
         "quiet": False,
@@ -198,22 +217,73 @@ def download_audio(  # pylint: disable=too-many-arguments,too-many-positional-ar
         "keepvideo": False,
         "concurrent_fragment_downloads": concurrent_fragments,
     }
+    if is_video:
+        opts["merge_output_format"] = media_format
     if force:
-        ydl_opts["overwrites"] = True
+        opts["overwrites"] = True
 
     # SoundCloud OAuth token (needed for some Go+ / gated tracks).
     # yt-dlp has no dedicated option for this — set the header directly.
     if sc_auth and platform == "soundcloud":
-        ydl_opts["http_headers"] = {"Authorization": f"OAuth {sc_auth}"}
+        opts["http_headers"] = {"Authorization": f"OAuth {sc_auth}"}
     if cookies:
-        ydl_opts["cookiefile"] = cookies
+        opts["cookiefile"] = cookies
     if cookies_from_browser:
-        ydl_opts["cookiesfrombrowser"] = (cookies_from_browser,)
+        opts["cookiesfrombrowser"] = (cookies_from_browser,)
 
-    fmt_label = "ALAC (.m4a)" if audio_format == "alac" else audio_format.upper()
+    return opts
+
+
+def _format_label(media_format: str) -> str:
+    """Human-readable label for the format (used in console output)."""
+    if media_format == "alac":
+        return "ALAC (.m4a)"
+    if media_format == "mp4":
+        return "MP4 (video+audio)"
+    return media_format.upper()
+
+
+def download_media(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    url: str,
+    media_format: str = "mp3",
+    output_dir: str = ".",
+    sc_auth: str | None = None,
+    cookies: str | None = None,
+    cookies_from_browser: str | None = None,
+    playlist: bool = False,
+    force: bool = False,
+    concurrent_fragments: int = 4,
+) -> list[str]:
+    """
+    Download from ``url`` in the requested ``media_format``.
+
+    Audio formats (mp3, m4a, flac, alac, opus, wav) extract the audio
+    stream. Video formats (mp4) merge bestvideo+bestaudio into the
+    chosen container. Returns the list of saved file paths; an empty
+    list means failure.
+    """
+    import yt_dlp  # pylint: disable=import-outside-toplevel
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    platform = detect_platform(url)
+    platform_label = platform.capitalize() if platform != "unknown" else "URL"
+
+    ydl_opts = _build_ydl_opts(
+        media_format=media_format,
+        output_dir=output_dir,
+        playlist=playlist,
+        force=force,
+        concurrent_fragments=concurrent_fragments,
+        platform=platform,
+        sc_auth=sc_auth,
+        cookies=cookies,
+        cookies_from_browser=cookies_from_browser,
+    )
+
     mode = "playlist" if playlist else "single track"
     print(f"\n[{platform_label}] Fetching {mode} from: {url}")
-    print(f"Format: {fmt_label}  |  Output dir: {os.path.abspath(output_dir)}\n")
+    print(f"Format: {_format_label(media_format)}  |  Output dir: {os.path.abspath(output_dir)}\n")
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -241,16 +311,18 @@ def download_audio(  # pylint: disable=too-many-arguments,too-many-positional-ar
 def main():
     """Parse CLI arguments and run downloads."""
     parser = argparse.ArgumentParser(
-        description="Download high-quality audio from YouTube, SoundCloud, "
-                    "or any other site yt-dlp supports."
+        description="Download high-quality audio (or video, with --format mp4) "
+                    "from YouTube, SoundCloud, or any other site yt-dlp supports."
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("urls", nargs="+", help="One or more source URLs")
     parser.add_argument(
         "-f", "--format",
-        choices=["mp3", "m4a", "flac", "alac", "opus", "wav"],
+        choices=list(ALL_FORMATS),
         default="mp3",
-        help="Audio format (default: mp3 @ 320 kbps). Use 'alac' for Apple Lossless.",
+        help="Output format (default: mp3 @ 320 kbps). Audio: mp3, m4a, flac, "
+             "alac (Apple Lossless), opus, wav. Video: mp4 (downloads "
+             "video+audio merged into a single file).",
     )
     parser.add_argument(
         "-o", "--output", default=".",
@@ -295,9 +367,9 @@ def main():
         clean_url = sanitize_url(url)
         if clean_url != url:
             print(f"Sanitized URL → {clean_url}")
-        saved = download_audio(
+        saved = download_media(
             clean_url,
-            audio_format=args.format,
+            media_format=args.format,
             output_dir=args.output,
             sc_auth=args.sc_auth,
             cookies=args.cookies,

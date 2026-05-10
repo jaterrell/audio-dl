@@ -1,6 +1,13 @@
 # pylint: disable=missing-function-docstring,missing-class-docstring
-"""Tests for audio_dl.py — sanitize_url and detect_platform."""
-from audio_dl import detect_platform, sanitize_url
+"""Tests for audio_dl.py — sanitize_url, detect_platform, _build_ydl_opts."""
+from audio_dl import (
+    ALL_FORMATS,
+    AUDIO_FORMATS,
+    VIDEO_FORMATS,
+    _build_ydl_opts,
+    detect_platform,
+    sanitize_url,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -144,3 +151,195 @@ class TestSanitizeUrlUnknown:
     def test_unknown_url_no_params_returned_unchanged(self):
         url = "https://example.com/audio.mp3"
         assert sanitize_url(url) == url
+
+
+# ---------------------------------------------------------------------------
+# _build_ydl_opts — option-dict construction is the critical seam between
+# our config and yt-dlp. These tests pin down the exact behavior expected
+# from the post-processing pipeline so a regression in branching logic
+# fails loudly without needing a live yt-dlp call.
+# ---------------------------------------------------------------------------
+
+DEFAULT_OPTS = {
+    "output_dir": ".",
+    "playlist": False,
+    "force": False,
+    "concurrent_fragments": 4,
+    "platform": "youtube",
+}
+
+
+def _pp_keys(opts):
+    """Return the postprocessor keys in order."""
+    return [pp["key"] for pp in opts["postprocessors"]]
+
+
+def _extract_audio_pp(opts):
+    """Pull the FFmpegExtractAudio postprocessor out of opts (or None)."""
+    for pp in opts["postprocessors"]:
+        if pp["key"] == "FFmpegExtractAudio":
+            return pp
+    return None
+
+
+class TestFormatConstants:
+    def test_audio_and_video_formats_disjoint(self):
+        assert set(AUDIO_FORMATS).isdisjoint(set(VIDEO_FORMATS))
+
+    def test_all_formats_is_union(self):
+        assert set(ALL_FORMATS) == set(AUDIO_FORMATS) | set(VIDEO_FORMATS)
+
+
+class TestBuildYdlOptsAudio:
+    def test_mp3_uses_320_quality_and_extract_audio(self):
+        opts = _build_ydl_opts(media_format="mp3", **DEFAULT_OPTS)
+        assert opts["format"] == "bestaudio/best"
+        assert "merge_output_format" not in opts
+        pp = _extract_audio_pp(opts)
+        assert pp is not None
+        assert pp["preferredcodec"] == "mp3"
+        assert pp["preferredquality"] == "320"
+
+    def test_m4a_uses_256_quality(self):
+        opts = _build_ydl_opts(media_format="m4a", **DEFAULT_OPTS)
+        pp = _extract_audio_pp(opts)
+        assert pp["preferredcodec"] == "m4a"
+        assert pp["preferredquality"] == "256"
+
+    def test_flac_no_quality_param(self):
+        # Lossless: yt-dlp shouldn't be told a target bitrate.
+        opts = _build_ydl_opts(media_format="flac", **DEFAULT_OPTS)
+        pp = _extract_audio_pp(opts)
+        assert pp["preferredcodec"] == "flac"
+        assert "preferredquality" not in pp
+
+    def test_alac_codec_passed_through(self):
+        opts = _build_ydl_opts(media_format="alac", **DEFAULT_OPTS)
+        pp = _extract_audio_pp(opts)
+        assert pp["preferredcodec"] == "alac"
+        assert "preferredquality" not in pp
+
+    def test_opus_no_quality_and_embeds_thumbnail(self):
+        opts = _build_ydl_opts(media_format="opus", **DEFAULT_OPTS)
+        pp = _extract_audio_pp(opts)
+        assert pp["preferredcodec"] == "opus"
+        assert "preferredquality" not in pp
+        assert "EmbedThumbnail" in _pp_keys(opts)
+        assert opts["writethumbnail"] is True
+
+    def test_wav_skips_thumbnail_pipeline(self):
+        # WAV containers don't support embedded artwork; confirm the
+        # entire thumbnail pipeline is disabled, not just the embed step.
+        opts = _build_ydl_opts(media_format="wav", **DEFAULT_OPTS)
+        assert "EmbedThumbnail" not in _pp_keys(opts)
+        assert opts["writethumbnail"] is False
+
+    def test_metadata_postprocessor_always_present(self):
+        for fmt in AUDIO_FORMATS:
+            opts = _build_ydl_opts(media_format=fmt, **DEFAULT_OPTS)
+            assert "FFmpegMetadata" in _pp_keys(opts), f"missing for {fmt}"
+
+
+class TestBuildYdlOptsVideo:
+    def test_mp4_uses_video_format_string(self):
+        opts = _build_ydl_opts(media_format="mp4", **DEFAULT_OPTS)
+        assert opts["format"] == "bestvideo*+bestaudio/best"
+
+    def test_mp4_sets_merge_output_format(self):
+        opts = _build_ydl_opts(media_format="mp4", **DEFAULT_OPTS)
+        assert opts["merge_output_format"] == "mp4"
+
+    def test_mp4_does_not_extract_audio(self):
+        # Critical: the FFmpegExtractAudio postprocessor would strip
+        # the video stream. It must not appear in video mode.
+        opts = _build_ydl_opts(media_format="mp4", **DEFAULT_OPTS)
+        assert _extract_audio_pp(opts) is None
+        assert "FFmpegExtractAudio" not in _pp_keys(opts)
+
+    def test_mp4_keeps_metadata_and_thumbnail(self):
+        opts = _build_ydl_opts(media_format="mp4", **DEFAULT_OPTS)
+        keys = _pp_keys(opts)
+        assert "FFmpegMetadata" in keys
+        assert "EmbedThumbnail" in keys
+        assert opts["writethumbnail"] is True
+
+
+class TestBuildYdlOptsCommon:
+    def test_force_sets_overwrites(self):
+        opts = _build_ydl_opts(
+            media_format="mp3",
+            output_dir=".",
+            playlist=False,
+            force=True,
+            concurrent_fragments=4,
+            platform="youtube",
+        )
+        assert opts["overwrites"] is True
+
+    def test_no_force_omits_overwrites(self):
+        opts = _build_ydl_opts(media_format="mp3", **DEFAULT_OPTS)
+        assert "overwrites" not in opts
+
+    def test_playlist_changes_outtmpl(self):
+        opts = _build_ydl_opts(
+            media_format="mp3",
+            output_dir="/tmp/out",
+            playlist=True,
+            force=False,
+            concurrent_fragments=4,
+            platform="youtube",
+        )
+        assert "%(playlist_title)s" in opts["outtmpl"]
+        assert opts["noplaylist"] is False
+
+    def test_single_track_uses_flat_outtmpl(self):
+        opts = _build_ydl_opts(
+            media_format="mp3",
+            output_dir="/tmp/out",
+            playlist=False,
+            force=False,
+            concurrent_fragments=4,
+            platform="youtube",
+        )
+        assert "%(playlist_title)s" not in opts["outtmpl"]
+        assert opts["noplaylist"] is True
+
+    def test_sc_auth_only_applied_for_soundcloud(self):
+        opts = _build_ydl_opts(
+            media_format="mp3", sc_auth="tok123",
+            output_dir=".", playlist=False, force=False,
+            concurrent_fragments=4, platform="youtube",
+        )
+        assert "http_headers" not in opts
+
+        opts = _build_ydl_opts(
+            media_format="mp3", sc_auth="tok123",
+            output_dir=".", playlist=False, force=False,
+            concurrent_fragments=4, platform="soundcloud",
+        )
+        assert opts["http_headers"]["Authorization"] == "OAuth tok123"
+
+    def test_cookies_file_passed_through(self):
+        opts = _build_ydl_opts(
+            media_format="mp3", cookies="/tmp/c.txt",
+            output_dir=".", playlist=False, force=False,
+            concurrent_fragments=4, platform="youtube",
+        )
+        assert opts["cookiefile"] == "/tmp/c.txt"
+
+    def test_cookies_from_browser_passed_as_tuple(self):
+        # yt-dlp expects cookiesfrombrowser as a tuple, not a bare string.
+        opts = _build_ydl_opts(
+            media_format="mp3", cookies_from_browser="chrome",
+            output_dir=".", playlist=False, force=False,
+            concurrent_fragments=4, platform="youtube",
+        )
+        assert opts["cookiesfrombrowser"] == ("chrome",)
+
+    def test_concurrent_fragments_passed_through(self):
+        opts = _build_ydl_opts(
+            media_format="mp3",
+            output_dir=".", playlist=False, force=False,
+            concurrent_fragments=8, platform="youtube",
+        )
+        assert opts["concurrent_fragment_downloads"] == 8
