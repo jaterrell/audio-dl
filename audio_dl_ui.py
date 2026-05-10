@@ -93,11 +93,31 @@ class JobState:  # pylint: disable=too-many-instance-attributes
 JOBS: dict[str, JobState] = {}
 
 
+_INDEX_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>audio-dl</title>
+</head>
+<body>
+<h1>audio-dl</h1>
+<p>UI under construction.</p>
+</body>
+</html>
+"""
+
+
 # ---------------------------------------------------------------------------
 # FastAPI app (endpoints filled in by later tasks)
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="audio-dl-ui", version=__version__)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> HTMLResponse:
+    """Return the index HTML page."""
+    return HTMLResponse(_INDEX_HTML)
 
 
 # ---------------------------------------------------------------------------
