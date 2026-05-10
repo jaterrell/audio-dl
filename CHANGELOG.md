@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0] - 2026-05-10
+
+### Added
+- **mp4 video format** — pass `-f mp4` to download video+audio merged into a single file (default remains audio extraction)
+
+### Changed
+- Extracted pure `_build_ydl_opts` function — yt-dlp options-dict construction is now testable without a live network call
+- Renamed `download_audio` → `download_media` (and `audio_format` → `media_format`) to reflect the broader scope; the format string is now the single source of truth for the output pipeline
+
 ## [1.0.0] - 2026-05-04
 
 ### Added
