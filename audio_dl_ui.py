@@ -15,10 +15,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-# pylint: disable=unused-import
-# The following imports are unused in this bootstrap scaffold but will be used
-# in future tasks (3-11) to implement the full UI, progress hooks, job state,
-# and SSE endpoints. Suppressing to allow clean bootstrap status.
 import asyncio
 import json
 import os
@@ -44,7 +40,6 @@ from audio_dl import (
     sanitize_url,
     __version__,
 )
-# pylint: enable=unused-import
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +412,7 @@ _INDEX_HTML = """<!doctype html>
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'reveal';
-      btn.textContent = `Reveal folder (${paths.length} files)`;
+      btn.textContent = `Reveal in Finder (${paths.length} files)`;
       btn.onclick = () => fetch('/reveal', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({path: paths[0]})
