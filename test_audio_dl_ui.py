@@ -1,5 +1,8 @@
 # pylint: disable=missing-function-docstring,missing-class-docstring,too-few-public-methods
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
+import json
+import time
+
 from fastapi.testclient import TestClient
 
 from audio_dl_ui import app, JOBS
@@ -89,7 +92,18 @@ class TestPostJobsHappyPath:
         assert "job_id" in data
         assert isinstance(data["job_id"], str) and len(data["job_id"]) >= 16
 
-    def test_registers_in_jobs_dict(self, tmp_path):
+    def test_registers_in_jobs_dict(self, tmp_path, monkeypatch):
+        import audio_dl_ui as ui
+        # Block download_media so we can inspect state before it transitions.
+        import threading as _threading
+        gate = _threading.Event()
+
+        def _blocking_download(*_args, **_kwargs):
+            gate.wait()  # hold until the test releases
+            return []
+
+        monkeypatch.setattr(ui, "download_media", _blocking_download)
+
         body = _valid_body(
             urls="https://youtu.be/AAA https://youtu.be/BBB",
             output_dir=str(tmp_path),
@@ -101,8 +115,11 @@ class TestPostJobsHappyPath:
         assert job.media_format == "mp3"
         assert job.jobs == 2
         assert set(job.url_states.keys()) == {"https://youtu.be/AAA", "https://youtu.be/BBB"}
+        # All URLs should be in a known valid state (pending or downloading).
+        valid_initial = {"pending", "downloading"}
         for state in job.url_states.values():
-            assert state.status == "pending"
+            assert state.status in valid_initial
+        gate.set()  # release the blocked workers
 
 
 # ---------------------------------------------------------------------------
@@ -169,3 +186,69 @@ class TestProgressHook:
         import pytest
         with pytest.raises(_Cancelled):
             hook({"status": "downloading", "downloaded_bytes": 1, "total_bytes": 100})
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: SSE happy path with mocked download_media
+# ---------------------------------------------------------------------------
+
+class TestSseHappyPath:
+    def test_sse_event_sequence(self, tmp_path, monkeypatch):
+        """
+        Mock download_media to emit 2 fake progress events into the hook,
+        then return a synthetic path. Open POST /jobs, then GET
+        /jobs/{id}/events, and assert the event order over SSE.
+        """
+        import audio_dl_ui as ui
+
+        fake_path = str(tmp_path / "song.mp3")
+        # Pre-create the file so the worker's path bookkeeping is realistic.
+        (tmp_path / "song.mp3").write_bytes(b"x")
+
+        def fake_download(_url, *, progress_hooks=None, **_kwargs):
+            assert progress_hooks, "worker must wire in a hook"
+            hook = progress_hooks[0]
+            hook({"status": "downloading", "downloaded_bytes": 50,
+                  "total_bytes": 100, "speed": 1024, "eta": 1,
+                  "filename": fake_path})
+            # Force a clock advance past the throttle window so the second
+            # progress event actually emits.
+            time.sleep(0.25)
+            hook({"status": "downloading", "downloaded_bytes": 100,
+                  "total_bytes": 100, "speed": 1024, "eta": 0,
+                  "filename": fake_path})
+            return [fake_path]
+
+        monkeypatch.setattr(ui, "download_media", fake_download)
+
+        body = _valid_body(
+            urls="https://youtu.be/AAA",
+            output_dir=str(tmp_path),
+        )
+        r = client.post("/jobs", json=body)
+        job_id = r.json()["job_id"]
+
+        # Drain SSE stream synchronously; TestClient yields chunks.
+        with client.stream("GET", f"/jobs/{job_id}/events", timeout=10) as resp:
+            assert resp.status_code == 200
+            events = []
+            for line in resp.iter_lines():
+                if not line or line.startswith(": "):  # blank lines + keepalives
+                    continue
+                if line.startswith("data: "):
+                    events.append(json.loads(line[len("data: "):]))
+                if events and events[-1].get("type") == "job_completed":
+                    break
+
+        types = [e["type"] for e in events]
+        assert types[0] == "job_started"
+        assert "url_started" in types
+        assert "url_completed" in types
+        assert types[-1] == "job_completed"
+        # Find the url_completed event and check the path.
+        completed = next(e for e in events if e["type"] == "url_completed")
+        assert completed["paths"] == [fake_path]
+        # Summary in job_completed.
+        last = events[-1]
+        assert last["summary"]["completed"] == 1
+        assert last["summary"]["failed"] == 0

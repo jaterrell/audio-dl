@@ -148,6 +148,112 @@ def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], 
     return hook
 
 
+def _run_one(job: JobState, raw_url: str) -> None:
+    """One unit of work for the executor: sanitize, download, emit events."""
+    url_state = job.url_states[raw_url]
+
+    # Cancel-before-start: handles the race where a future is scheduled
+    # but hadn't started running when cancel was hit.
+    if job.cancelled:
+        url_state.status = "cancelled"
+        url_state.error = "Cancelled"
+        _emit(job, {"type": "url_failed", "job_id": job.id,
+                    "url": raw_url, "error": "Cancelled"})
+        return
+
+    clean = sanitize_url(raw_url)
+    url_state.sanitized_url = clean
+    url_state.status = "downloading"
+    _emit(job, {"type": "url_started", "job_id": job.id,
+                "url": raw_url, "sanitized_url": clean})
+
+    hook = _make_progress_hook(job, url_state)
+    try:
+        paths = download_media(
+            clean,
+            media_format=job.media_format,
+            output_dir=job.output_dir,
+            playlist=job.playlist,
+            force=job.force,
+            concurrent_fragments=job.fragments,
+            progress_hooks=[hook],
+        )
+    except _Cancelled:
+        url_state.status = "cancelled"
+        _emit(job, {"type": "url_failed", "job_id": job.id,
+                    "url": raw_url, "error": "Cancelled"})
+        return
+    except Exception as e:  # pylint: disable=broad-except
+        # yt-dlp may wrap _Cancelled in DownloadError — detect by chained cause.
+        if isinstance(e.__cause__, _Cancelled) or "Cancelled" in str(e):
+            url_state.status = "cancelled"
+            _emit(job, {"type": "url_failed", "job_id": job.id,
+                        "url": raw_url, "error": "Cancelled"})
+            return
+        url_state.status = "failed"
+        url_state.error = str(e)
+        _emit(job, {"type": "url_failed", "job_id": job.id,
+                    "url": raw_url, "error": str(e)})
+        return
+
+    if not paths:
+        url_state.status = "failed"
+        url_state.error = "Download failed"
+        _emit(job, {"type": "url_failed", "job_id": job.id,
+                    "url": raw_url, "error": "Download failed"})
+        return
+
+    url_state.status = "completed"
+    url_state.paths = paths
+    _emit(job, {"type": "url_completed", "job_id": job.id,
+                "url": raw_url, "paths": paths})
+
+
+def _supervise(job: JobState, futures: list) -> None:
+    """Wait for all futures, then emit job_completed and clean up."""
+    wait(futures, return_when=ALL_COMPLETED)
+    # Futures cancelled by the executor (cancel_futures=True path) never
+    # ran _run_one, so their url_states are still 'pending'. Reclassify
+    # them as 'cancelled' and emit the matching url_failed event so the
+    # UI shows the right state.
+    if job.cancelled:
+        for st in job.url_states.values():
+            if st.status in ("pending", "downloading"):
+                st.status = "cancelled"
+                st.error = "Cancelled"
+                _emit(job, {"type": "url_failed", "job_id": job.id,
+                            "url": st.url, "error": "Cancelled"})
+    summary = {"completed": 0, "failed": 0, "cancelled": 0}
+    for st in job.url_states.values():
+        if st.status == "completed":
+            summary["completed"] += 1
+        elif st.status == "cancelled":
+            summary["cancelled"] += 1
+        else:
+            summary["failed"] += 1
+    _emit(job, {"type": "job_completed", "job_id": job.id, "summary": summary})
+    if job.executor is not None:
+        job.executor.shutdown(wait=False)
+
+
+def _start_job(job: JobState) -> None:
+    """Spin up the executor and supervisor. Called from POST /jobs."""
+    job.executor = ThreadPoolExecutor(max_workers=job.jobs)
+    # Emit job_started BEFORE submitting futures to guarantee it is first in
+    # the queue, regardless of how quickly the worker threads start running.
+    _emit(job, {
+        "type": "job_started",
+        "job_id": job.id,
+        "urls": [{"url": s.url} for s in job.url_states.values()],
+    })
+    futures = [
+        job.executor.submit(_run_one, job, url)
+        for url in job.url_states
+    ]
+    supervisor = threading.Thread(target=_supervise, args=(job, futures), daemon=True)
+    supervisor.start()
+
+
 _INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -223,9 +329,42 @@ async def post_jobs(req: JobRequest) -> dict:
         queue=queue.Queue(),
     )
     JOBS[job_id] = job
-    # Worker startup lives in Task 7. For now, returning the id is enough
-    # for validation tests to pass.
+    _start_job(job)
     return {"job_id": job_id}
+
+
+async def _events_iter(job_id: str):
+    """SSE generator: drain a job's queue and yield framed events."""
+    job = JOBS.get(job_id)
+    if job is None:
+        # Should not happen because get_events checks first, but be defensive.
+        return
+    last_keepalive = time.monotonic()
+    while True:
+        try:
+            event = await asyncio.to_thread(job.queue.get, True, 1.0)
+        except queue.Empty:
+            now = time.monotonic()
+            if now - last_keepalive >= 30:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            continue
+        yield f"data: {json.dumps(event)}\n\n"
+        last_keepalive = time.monotonic()
+        if event.get("type") == "job_completed":
+            return
+
+
+@app.get("/jobs/{job_id}/events")
+async def get_events(job_id: str) -> StreamingResponse:
+    """Stream SSE events for a job."""
+    if job_id not in JOBS:
+        raise HTTPException(404, f"unknown job_id: {job_id}")
+    return StreamingResponse(
+        _events_iter(job_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------------------------------------------------------------------
