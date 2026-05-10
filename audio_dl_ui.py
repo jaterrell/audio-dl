@@ -379,6 +379,29 @@ async def cancel_job(job_id: str) -> dict:
     return {"ok": True}
 
 
+class RevealRequest(BaseModel):
+    """Request body for POST /reveal."""
+    path: str
+
+
+@app.post("/reveal")
+async def reveal(req: RevealRequest) -> dict:
+    """Open the file in Finder. Path must match a saved file in some current job."""
+    # Path-traversal guard: only allow paths that match a saved file in
+    # some current JobState. Prevents arbitrary `open -R` calls from the
+    # browser.
+    known = {
+        p
+        for job in JOBS.values()
+        for st in job.url_states.values()
+        for p in st.paths
+    }
+    if req.path not in known:
+        raise HTTPException(400, "Path not found in any current job.")
+    subprocess.run(["open", "-R", req.path], check=False)
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

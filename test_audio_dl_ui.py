@@ -304,3 +304,50 @@ class TestCancel:
         # JOBS[job_id].cancelled is True.
         from audio_dl_ui import JOBS
         assert JOBS[job_id].cancelled is True
+
+
+# ---------------------------------------------------------------------------
+# POST /reveal
+# ---------------------------------------------------------------------------
+
+class TestReveal:
+    def test_unknown_path_400(self, monkeypatch):
+        import audio_dl_ui as ui
+        called = []
+        monkeypatch.setattr(
+            ui.subprocess, "run",
+            lambda *a, **kw: called.append((a, kw)) or None,
+        )
+        r = client.post("/reveal", json={"path": "/etc/passwd"})
+        assert r.status_code == 400
+        assert not called, "subprocess.run must not be invoked for unknown paths"
+
+    def test_known_path_calls_open_dash_r(self, tmp_path, monkeypatch):
+        """Register a path in a fake job, then reveal it."""
+        import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, JobState, UrlState
+        import queue as _q
+
+        path = str(tmp_path / "song.mp3")
+        (tmp_path / "song.mp3").write_bytes(b"x")
+
+        job = JobState(
+            id="manual", media_format="mp3", output_dir=str(tmp_path),
+            playlist=False, force=False, fragments=4, jobs=1,
+            url_states={"u": UrlState(url="u", paths=[path], status="completed")},
+            queue=_q.Queue(),
+        )
+        JOBS["manual"] = job
+
+        try:
+            called = []
+            monkeypatch.setattr(
+                ui.subprocess, "run",
+                lambda *a, **kw: called.append((a, kw)) or None,
+            )
+            r = client.post("/reveal", json={"path": path})
+            assert r.status_code == 200
+            assert r.json() == {"ok": True}
+            assert called == [((["open", "-R", path],), {"check": False})]
+        finally:
+            del JOBS["manual"]
