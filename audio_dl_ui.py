@@ -254,18 +254,263 @@ def _start_job(job: JobState) -> None:
     supervisor.start()
 
 
+# pylint: disable=line-too-long
 _INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>audio-dl</title>
+<style>
+  :root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  body { max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #1c1c1e; background: #f7f7f8; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+  .sub { color: #6e6e73; font-size: 0.85rem; margin-bottom: 1.5rem; }
+  form { background: #fff; padding: 1.25rem; border-radius: 12px; border: 1px solid #e5e5ea; }
+  label { display: block; font-weight: 600; font-size: 0.85rem; margin: 0.75rem 0 0.3rem; }
+  textarea, input[type=text], select { width: 100%; box-sizing: border-box; padding: 0.5rem 0.6rem; border-radius: 8px; border: 1px solid #d1d1d6; font: inherit; }
+  textarea { resize: vertical; min-height: 5.5rem; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.85rem; }
+  .row { display: flex; gap: 0.75rem; }
+  .row > div { flex: 1; }
+  .checkboxes { display: flex; gap: 1rem; margin-top: 0.5rem; font-size: 0.9rem; }
+  .sliders { display: flex; gap: 1rem; margin-top: 0.5rem; }
+  .sliders > div { flex: 1; }
+  .sliders label { display: flex; justify-content: space-between; align-items: baseline; }
+  .sliders span { font-weight: 400; color: #6e6e73; font-variant-numeric: tabular-nums; }
+  button { background: #007aff; color: white; border: 0; padding: 0.6rem 1.2rem; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 1rem; }
+  button:disabled { background: #c7c7cc; cursor: default; }
+  button.cancel { background: #ff3b30; }
+  #jobpanel { background: #fff; margin-top: 1rem; padding: 1rem 1.25rem; border-radius: 12px; border: 1px solid #e5e5ea; display: none; }
+  #jobpanel.active { display: block; }
+  #jobpanel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+  #jobpanel h2 { font-size: 1rem; margin: 0; }
+  .urlrow { padding: 0.6rem 0; border-top: 1px solid #f2f2f4; }
+  .urlrow:first-child { border-top: 0; }
+  .urlrow .top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+  .urlrow .url { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.8rem; color: #3a3a3c; word-break: break-all; flex: 1; }
+  .urlrow .status { font-size: 0.8rem; color: #6e6e73; white-space: nowrap; }
+  .urlrow .status.completed { color: #34c759; }
+  .urlrow .status.failed, .urlrow .status.cancelled { color: #ff3b30; }
+  .bar { height: 6px; background: #e5e5ea; border-radius: 3px; margin-top: 0.4rem; overflow: hidden; }
+  .bar > div { height: 100%; background: #007aff; width: 0; transition: width 0.15s linear; }
+  .reveal { font-size: 0.8rem; padding: 0.25rem 0.6rem; margin-top: 0.4rem; background: #e5e5ea; color: #1c1c1e; border-radius: 6px; cursor: pointer; border: 0; }
+  .reveal:hover { background: #d1d1d6; }
+</style>
 </head>
 <body>
 <h1>audio-dl</h1>
-<p>UI under construction.</p>
+<div class="sub">Paste URLs. Pick a format. Click Download.</div>
+
+<form id="dl">
+  <label for="urls">URLs (one per line)</label>
+  <textarea id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea>
+
+  <div class="row">
+    <div>
+      <label for="format">Format</label>
+      <select id="format" name="format">__FORMAT_OPTIONS__</select>
+    </div>
+    <div>
+      <label for="output_dir">Output folder</label>
+      <input id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required>
+    </div>
+  </div>
+
+  <div class="checkboxes">
+    <label><input type="checkbox" id="playlist" name="playlist"> Full playlist</label>
+    <label><input type="checkbox" id="force" name="force"> Overwrite existing</label>
+  </div>
+
+  <div class="sliders">
+    <div>
+      <label for="jobs">Parallel jobs <span id="jobs_val">1</span></label>
+      <input id="jobs" name="jobs" type="range" min="1" max="8" value="1">
+    </div>
+    <div>
+      <label for="fragments">Fragments / track <span id="fragments_val">4</span></label>
+      <input id="fragments" name="fragments" type="range" min="1" max="16" value="4">
+    </div>
+  </div>
+
+  <button type="submit" id="submit">Download</button>
+</form>
+
+<section id="jobpanel">
+  <header>
+    <h2>Current job</h2>
+    <button type="button" class="cancel" id="cancel">Cancel</button>
+  </header>
+  <div id="rows"></div>
+</section>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const sliderBind = (id) => {
+    const el = $(id), out = $(id + '_val');
+    el.addEventListener('input', () => { out.textContent = el.value; });
+  };
+  sliderBind('jobs');
+  sliderBind('fragments');
+
+  let currentJobId = null;
+  let es = null;
+  const rows = $('rows');
+
+  function rowFor(url) {
+    let row = document.getElementById('row-' + btoa(url).replace(/=/g, ''));
+    if (row) return row;
+    row = document.createElement('div');
+    row.className = 'urlrow';
+    row.id = 'row-' + btoa(url).replace(/=/g, '');
+    row.innerHTML = `
+      <div class="top">
+        <div class="url">${url}</div>
+        <div class="status">pending</div>
+      </div>
+      <div class="bar"><div></div></div>
+      <div class="files"></div>
+    `;
+    rows.appendChild(row);
+    return row;
+  }
+
+  function setStatus(row, text, cls) {
+    const s = row.querySelector('.status');
+    s.textContent = text;
+    s.className = 'status ' + (cls || '');
+  }
+
+  function setBar(row, pct) {
+    row.querySelector('.bar > div').style.width = pct + '%';
+  }
+
+  function fmtBytes(b) {
+    if (!b) return '';
+    const u = ['B','KB','MB','GB']; let i = 0;
+    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return b.toFixed(1) + u[i];
+  }
+
+  function fmtSpeed(b) { return b ? fmtBytes(b) + '/s' : ''; }
+
+  function fmtEta(s) {
+    if (s == null) return '';
+    const m = Math.floor(s / 60), r = s % 60;
+    return `ETA ${m}:${String(r).padStart(2,'0')}`;
+  }
+
+  function addRevealButton(row, paths) {
+    const filesDiv = row.querySelector('.files');
+    filesDiv.innerHTML = '';
+    if (paths.length === 1) {
+      const name = paths[0].split('/').pop();
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'reveal';
+      btn.textContent = `Reveal: ${name}`;
+      btn.onclick = () => fetch('/reveal', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: paths[0]})
+      });
+      filesDiv.appendChild(btn);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'reveal';
+      btn.textContent = `Reveal folder (${paths.length} files)`;
+      btn.onclick = () => fetch('/reveal', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: paths[0]})
+      });
+      filesDiv.appendChild(btn);
+    }
+  }
+
+  function handleEvent(ev) {
+    if (ev.type === 'job_started') {
+      ev.urls.forEach(u => rowFor(u.url));
+    } else if (ev.type === 'url_started') {
+      const row = rowFor(ev.url);
+      setStatus(row, 'downloading…');
+    } else if (ev.type === 'progress') {
+      const row = rowFor(ev.url);
+      setBar(row, ev.percent);
+      const bits = [`${ev.percent.toFixed(1)}%`];
+      if (ev.speed) bits.push(fmtSpeed(ev.speed));
+      if (ev.eta != null) bits.push(fmtEta(ev.eta));
+      setStatus(row, bits.join(' · '));
+    } else if (ev.type === 'url_completed') {
+      const row = rowFor(ev.url);
+      setBar(row, 100);
+      setStatus(row, 'completed', 'completed');
+      addRevealButton(row, ev.paths);
+    } else if (ev.type === 'url_failed') {
+      const row = rowFor(ev.url);
+      setStatus(row, ev.error || 'failed',
+                ev.error === 'Cancelled' ? 'cancelled' : 'failed');
+    } else if (ev.type === 'job_completed') {
+      $('submit').disabled = false;
+      $('cancel').disabled = true;
+      es && es.close();
+      es = null;
+      currentJobId = null;
+    }
+  }
+
+  $('dl').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    $('submit').disabled = true;
+    $('cancel').disabled = false;
+    rows.innerHTML = '';
+    $('jobpanel').classList.add('active');
+
+    const body = {
+      urls: $('urls').value,
+      format: $('format').value,
+      output_dir: $('output_dir').value,
+      playlist: $('playlist').checked,
+      force: $('force').checked,
+      jobs: parseInt($('jobs').value, 10),
+      fragments: parseInt($('fragments').value, 10),
+    };
+    let resp;
+    try {
+      resp = await fetch('/jobs', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      alert('Failed to start: ' + err);
+      $('submit').disabled = false;
+      return;
+    }
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({detail: resp.statusText}));
+      alert('Error: ' + (detail.detail || resp.statusText));
+      $('submit').disabled = false;
+      return;
+    }
+    const {job_id} = await resp.json();
+    currentJobId = job_id;
+    es = new EventSource('/jobs/' + job_id + '/events');
+    es.onmessage = (m) => {
+      if (!m.data) return;
+      try { handleEvent(JSON.parse(m.data)); } catch (e) { console.error(e, m.data); }
+    };
+    es.onerror = () => { /* EventSource auto-reconnects; nothing to do */ };
+  });
+
+  $('cancel').addEventListener('click', () => {
+    if (currentJobId) {
+      fetch('/jobs/' + currentJobId + '/cancel', {method: 'POST'});
+    }
+  });
+})();
+</script>
 </body>
 </html>
 """
+# pylint: enable=line-too-long
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +534,18 @@ class JobRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
-    """Return the index HTML page."""
-    return HTMLResponse(_INDEX_HTML)
+    """Render the single-page UI with format options + default output dir templated in."""
+    options = "".join(
+        f'<option value="{f}">{f}</option>' for f in ALL_FORMATS
+    )
+    default_dir = getattr(app.state, "default_output_dir",
+                          os.path.expanduser("~/Downloads/audio-dl"))
+    html = (
+        _INDEX_HTML
+        .replace("__FORMAT_OPTIONS__", options)
+        .replace("__DEFAULT_OUTPUT_DIR__", default_dir)
+    )
+    return HTMLResponse(html)
 
 
 @app.post("/jobs")
