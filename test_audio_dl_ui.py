@@ -103,3 +103,69 @@ class TestPostJobsHappyPath:
         assert set(job.url_states.keys()) == {"https://youtu.be/AAA", "https://youtu.be/BBB"}
         for state in job.url_states.values():
             assert state.status == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Progress hook — throttle + cancel
+# ---------------------------------------------------------------------------
+
+class TestProgressHook:
+    def _make_job(self):
+        import queue as _q
+        from audio_dl_ui import JobState, UrlState
+        url = "https://youtu.be/AAA"
+        job = JobState(
+            id="job-test",
+            media_format="mp3",
+            output_dir="/tmp",
+            playlist=False,
+            force=False,
+            fragments=4,
+            jobs=1,
+            url_states={url: UrlState(url=url)},
+            queue=_q.Queue(),
+        )
+        return job, job.url_states[url]
+
+    def test_throttle_caps_event_rate(self, monkeypatch):
+        from audio_dl_ui import _make_progress_hook
+        import audio_dl_ui
+
+        job, url_state = self._make_job()
+        # Fake clock: each call advances by 0.001s (1ms). 1000 ticks => 1s elapsed.
+        ticks = [0.0]
+        def fake_monotonic():
+            ticks[0] += 0.001
+            return ticks[0]
+        monkeypatch.setattr(audio_dl_ui.time, "monotonic", fake_monotonic)
+
+        hook = _make_progress_hook(job, url_state)
+        for _ in range(1000):
+            hook({
+                "status": "downloading",
+                "downloaded_bytes": 100,
+                "total_bytes": 1000,
+                "speed": 1024,
+                "eta": 5,
+                "filename": "x.mp3",
+            })
+        # 1 second of 1ms ticks; throttle is 200ms => ~5 events, ±1.
+        emitted = [job.queue.get_nowait() for _ in range(job.queue.qsize())]
+        assert 4 <= len(emitted) <= 6, f"got {len(emitted)} events"
+        assert all(e["type"] == "progress" for e in emitted)
+
+    def test_non_downloading_status_ignored(self):
+        from audio_dl_ui import _make_progress_hook
+        job, url_state = self._make_job()
+        hook = _make_progress_hook(job, url_state)
+        hook({"status": "finished", "downloaded_bytes": 0})
+        assert job.queue.empty()
+
+    def test_cancel_flag_raises(self):
+        from audio_dl_ui import _make_progress_hook, _Cancelled
+        job, url_state = self._make_job()
+        hook = _make_progress_hook(job, url_state)
+        job.cancelled = True
+        import pytest
+        with pytest.raises(_Cancelled):
+            hook({"status": "downloading", "downloaded_bytes": 1, "total_bytes": 100})

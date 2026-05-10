@@ -93,6 +93,61 @@ class JobState:  # pylint: disable=too-many-instance-attributes
 JOBS: dict[str, JobState] = {}
 
 
+# ---------------------------------------------------------------------------
+# Internals
+# ---------------------------------------------------------------------------
+
+def _emit(job: JobState, event: dict) -> None:
+    """Push an SSE event onto the job's queue."""
+    job.queue.put(event)
+
+
+def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], None]:
+    """
+    Build a yt-dlp progress hook bound to one URL.
+
+    - Raises `_Cancelled` when `job.cancelled` is set (yt-dlp will surface
+      this as a DownloadError, which `_run_one` catches).
+    - Throttles to at most ~5 events/sec/URL.
+    """
+    def hook(d: dict) -> None:
+        if job.cancelled:
+            raise _Cancelled()
+
+        if d.get("status") != "downloading":
+            return
+
+        now = time.monotonic()
+        if now - url_state.last_progress_emit < 0.2:
+            return
+        url_state.last_progress_emit = now
+
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        downloaded = d.get("downloaded_bytes") or 0
+        percent = (downloaded / total * 100) if total else 0.0
+
+        url_state.percent = percent
+        url_state.downloaded_bytes = downloaded
+        url_state.total_bytes = total
+        url_state.speed = d.get("speed")
+        url_state.eta = d.get("eta")
+        url_state.filename = d.get("filename")
+
+        _emit(job, {
+            "type": "progress",
+            "job_id": job.id,
+            "url": url_state.url,
+            "percent": percent,
+            "downloaded_bytes": downloaded,
+            "total_bytes": total,
+            "speed": d.get("speed"),
+            "eta": d.get("eta"),
+            "filename": d.get("filename"),
+        })
+
+    return hook
+
+
 _INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
