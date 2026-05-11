@@ -357,14 +357,16 @@ _INDEX_HTML = """<!doctype html>
     row = document.createElement('div');
     row.className = 'urlrow';
     row.id = 'row-' + btoa(url).replace(/=/g, '');
-    row.innerHTML = `
-      <div class="top">
-        <div class="url">${url}</div>
-        <div class="status">pending</div>
-      </div>
-      <div class="bar"><div></div></div>
-      <div class="files"></div>
-    `;
+    const top = document.createElement('div'); top.className = 'top';
+    const urlDiv = document.createElement('div'); urlDiv.className = 'url';
+    urlDiv.textContent = url;
+    const statusDiv = document.createElement('div'); statusDiv.className = 'status';
+    statusDiv.textContent = 'pending';
+    top.appendChild(urlDiv); top.appendChild(statusDiv);
+    const bar = document.createElement('div'); bar.className = 'bar';
+    bar.appendChild(document.createElement('div'));
+    const files = document.createElement('div'); files.className = 'files';
+    row.appendChild(top); row.appendChild(bar); row.appendChild(files);
     rows.appendChild(row);
     return row;
   }

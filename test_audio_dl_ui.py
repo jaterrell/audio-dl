@@ -23,6 +23,7 @@ class TestIndex:
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
         assert "audio-dl" in r.text
+        assert "${url}" not in r.text
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +87,9 @@ class TestPostJobsValidation:
 # ---------------------------------------------------------------------------
 
 class TestPostJobsHappyPath:
-    def test_returns_job_id(self, tmp_path):
+    def test_returns_job_id(self, tmp_path, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
         body = _valid_body(output_dir=str(tmp_path))
         r = client.post("/jobs", json=body)
         assert r.status_code == 200

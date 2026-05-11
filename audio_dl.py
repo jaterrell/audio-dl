@@ -40,14 +40,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, parse_qs, urlencode
 
 
+def _host_matches(hostname: str, *domains: str) -> bool:
+    """Return True if hostname is exactly one of *domains or a subdomain of one."""
+    return any(hostname == d or hostname.endswith("." + d) for d in domains)
+
+
 def detect_platform(url: str) -> str:
     """Identify the source platform from the URL: youtube, soundcloud, bunnystream, or unknown."""
     hostname = urlparse(url).hostname or ""
-    if "youtube.com" in hostname or "youtu.be" in hostname:
+    if _host_matches(hostname, "youtube.com", "youtu.be"):
         return "youtube"
-    if "soundcloud.com" in hostname:
+    if _host_matches(hostname, "soundcloud.com"):
         return "soundcloud"
-    if hostname == "mediadelivery.net" or hostname.endswith(".mediadelivery.net"):
+    if _host_matches(hostname, "mediadelivery.net"):
         return "bunnystream"
     return "unknown"
 
@@ -65,7 +70,7 @@ def sanitize_url(url: str) -> str:
     hostname = parsed.hostname or ""
 
     # YouTube — rebuild cleanly to drop junk params
-    if "youtube.com" in hostname or "youtu.be" in hostname:
+    if _host_matches(hostname, "youtube.com", "youtu.be"):
         qs = parse_qs(parsed.query)
         path_parts = [p for p in parsed.path.split("/") if p]
 
@@ -92,7 +97,7 @@ def sanitize_url(url: str) -> str:
         return f"https://www.youtube.com/watch?{urlencode(clean_params)}"
 
     # SoundCloud — strip tracking params, keep the path clean
-    if "soundcloud.com" in hostname:
+    if _host_matches(hostname, "soundcloud.com"):
         qs = parse_qs(parsed.query)
         # Keep secret_token if present (needed for private tracks)
         clean_params = {}
@@ -103,7 +108,7 @@ def sanitize_url(url: str) -> str:
 
     # Bunny Stream — the path carries all identity info (library_id + video guid);
     # player-UI params are stripped; token/expires are preserved for access-controlled videos.
-    if hostname == "mediadelivery.net" or hostname.endswith(".mediadelivery.net"):
+    if _host_matches(hostname, "mediadelivery.net"):
         qs = parse_qs(parsed.query)
         clean_params = {}
         if "token" in qs:

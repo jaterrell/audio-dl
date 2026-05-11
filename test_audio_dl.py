@@ -47,6 +47,30 @@ class TestDetectPlatform:
         # of a different hostname — must return unknown
         assert detect_platform("https://mediadelivery.net.evil.com/embed/1/2") == "unknown"
 
+    def test_lookalike_domain_not_youtube(self):
+        # 'evilyoutube.com' contains 'youtube.com' as a substring but is not
+        # a subdomain — must return unknown
+        assert detect_platform("https://evilyoutube.com/watch?v=abc") == "unknown"
+
+    def test_subdomain_spoof_not_youtube(self):
+        # 'youtube.com.evil.test' has youtube.com as a substring of a
+        # different hostname — must return unknown
+        assert detect_platform("https://youtube.com.evil.test/watch?v=abc") == "unknown"
+
+    def test_youtu_be_lookalike_not_youtube(self):
+        # 'evilyoutu.be' contains 'youtu.be' as a substring — must return unknown
+        assert detect_platform("https://evilyoutu.be/abc") == "unknown"
+
+    def test_lookalike_domain_not_soundcloud(self):
+        # 'evilsoundcloud.com' contains 'soundcloud.com' as a substring but
+        # is not a subdomain — must return unknown
+        assert detect_platform("https://evilsoundcloud.com/artist/track") == "unknown"
+
+    def test_subdomain_spoof_not_soundcloud(self):
+        # 'soundcloud.com.evil.test' has soundcloud.com as a substring of a
+        # different hostname — must return unknown
+        assert detect_platform("https://soundcloud.com.evil.test/artist/track") == "unknown"
+
 
 # ---------------------------------------------------------------------------
 # sanitize_url — YouTube
@@ -77,6 +101,16 @@ class TestSanitizeUrlYouTube:
         result = sanitize_url(r"https://youtu.be/dQw4w9WgXcQ\?si\=abc")
         assert result == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
+    def test_youtube_subdomain_spoof_not_sanitized(self):
+        # youtube.com.evil.test must pass through unchanged, not enter the YouTube branch
+        url = "https://youtube.com.evil.test/watch?v=abc&utm=1"
+        assert sanitize_url(url) == url
+
+    def test_youtu_be_subdomain_spoof_not_sanitized(self):
+        # youtu.be.evil.test must pass through unchanged
+        url = "https://youtu.be.evil.test/abc?utm=1"
+        assert sanitize_url(url) == url
+
 
 # ---------------------------------------------------------------------------
 # sanitize_url — SoundCloud
@@ -94,6 +128,11 @@ class TestSanitizeUrlSoundCloud:
             "https://soundcloud.com/artist/private?secret_token=s-abc123&utm_source=x"
         )
         assert result == "https://soundcloud.com/artist/private?secret_token=s-abc123"
+
+    def test_soundcloud_subdomain_spoof_not_sanitized(self):
+        # soundcloud.com.evil.test must pass through unchanged, not enter the SoundCloud branch
+        url = "https://soundcloud.com.evil.test/artist/track?utm=1"
+        assert sanitize_url(url) == url
 
 
 # ---------------------------------------------------------------------------
