@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "audio-dl"
 version = "1.2.0"
-description = "Download high-quality audio from YouTube, SoundCloud, Bunny Stream, or anywhere yt-dlp supports."
+description = "Download high-quality audio from YouTube, SoundCloud, and any other site yt-dlp supports."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"

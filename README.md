@@ -3,7 +3,21 @@
 [![Tests](https://github.com/jaterrell/audio-dl/actions/workflows/tests.yml/badge.svg)](https://github.com/jaterrell/audio-dl/actions/workflows/tests.yml)
 [![Pylint](https://github.com/jaterrell/audio-dl/actions/workflows/pylint.yml/badge.svg)](https://github.com/jaterrell/audio-dl/actions/workflows/pylint.yml)
 
-Download high-quality audio (or video) from YouTube, SoundCloud, Bunny Stream, or anywhere yt-dlp supports.
+Download high-quality audio (or video) from YouTube, SoundCloud, and any other site yt-dlp supports.
+
+## Intended use
+
+This tool is a frontend to [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) for **personal, non-commercial use**:
+
+- Archiving content you own, created, or have explicit permission to download.
+- Saving content explicitly made available for offline use.
+- Educational or research use.
+
+You are responsible for complying with the terms of service of any platform you access. Do not use this tool to redistribute, sell, or commercially exploit content you don't own.
+
+audio-dl does not host any content, does not bypass DRM, does not decrypt protected streams, and provides no warranty (see [LICENSE](LICENSE)). It is a thin wrapper around yt-dlp's existing capabilities — the same legal considerations apply.
+
+If you represent a content platform with concerns about specific usage patterns: audio-dl is content-agnostic infrastructure and does not target or assist circumvention of any specific service's protections. Please open an issue and we'll cooperate in good faith.
 
 ## Requirements
 
