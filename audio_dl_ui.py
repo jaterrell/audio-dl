@@ -176,14 +176,14 @@ def _run_one(job: JobState, raw_url: str) -> None:
                     "url": raw_url, "error": "Cancelled"})
         return
 
-    clean = sanitize_url(raw_url)
-    url_state.sanitized_url = clean
-    url_state.status = "downloading"
-    _emit(job, {"type": "url_started", "job_id": job.id,
-                "url": raw_url, "sanitized_url": clean})
-
     hook = _make_progress_hook(job, url_state)
     try:
+        clean = sanitize_url(raw_url)
+        url_state.sanitized_url = clean
+        url_state.status = "downloading"
+        _emit(job, {"type": "url_started", "job_id": job.id,
+                    "url": raw_url, "sanitized_url": clean})
+
         paths = download_media(
             clean,
             media_format=job.media_format,

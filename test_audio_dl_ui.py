@@ -5,12 +5,25 @@ import json
 import threading
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
 from audio_dl_ui import app, JOBS
 
 # Set a known CSRF token at module load so all tests share the same value.
 app.state.csrf_token = "test-token"
+
+
+@pytest.fixture(autouse=True)
+def _reset_csrf_token():
+    """Restore the test CSRF token before every test.
+
+    Tests that call ``ui.main()`` (e.g. TestBindGuard) overwrite app.state.csrf_token
+    with a fresh random value. Without this fixture, any later test using
+    _csrf_headers() would get 403.
+    """
+    app.state.csrf_token = "test-token"
+
 
 client = TestClient(app)
 
@@ -470,3 +483,45 @@ class TestBindGuard:
         monkeypatch.setattr(sys, "argv",
                             ["audio-dl-ui", "--host", "0.0.0.0", "--allow-remote", "--no-browser"])
         ui.main()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# sanitize_url exception handling in _run_one
+# ---------------------------------------------------------------------------
+
+class TestRunOneSanitizeError:
+    def test_sanitize_url_exception_emits_url_failed(self, tmp_path, monkeypatch):
+        """If sanitize_url raises, _run_one should emit url_failed, not hang the row."""
+        import audio_dl_ui as ui
+
+        def boom(_url):
+            raise ValueError("intentional sanitize_url failure")
+
+        monkeypatch.setattr(ui, "sanitize_url", boom)
+        # Also mock download_media so it doesn't get called (sanitize_url error is earlier)
+        monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
+
+        body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 200, f"POST /jobs failed with {r.status_code}: {r.text}"
+        job_id = r.json()["job_id"]
+
+        with client.stream("GET", f"/jobs/{job_id}/events?token=test-token", timeout=5) as resp:
+            assert resp.status_code == 200
+            events = []
+            for line in resp.iter_lines():
+                if not line or line.startswith(": "):
+                    continue
+                if line.startswith("data: "):
+                    events.append(json.loads(line[len("data: "):]))
+                if events and events[-1].get("type") == "job_completed":
+                    break
+
+        types = [e["type"] for e in events]
+        assert "url_failed" in types, f"expected url_failed in {types}"
+        failed = next(e for e in events if e["type"] == "url_failed")
+        err = failed["error"].lower()
+        assert "intentional sanitize_url failure" in failed["error"] or "sanitize" in err
+        last = events[-1]
+        assert last["type"] == "job_completed"
+        assert last["summary"]["failed"] == 1
