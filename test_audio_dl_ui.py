@@ -575,3 +575,58 @@ class TestRevealSnapshotsJobs:
             assert r.status_code in (200, 400)
         finally:
             JOBS.clear()
+
+
+# ---------------------------------------------------------------------------
+# Bounded SSE queue (Codex [P2])
+# ---------------------------------------------------------------------------
+
+class TestQueueBound:
+    """JobState.queue is bounded at 128. Progress events get dropped on Full;
+    terminal events still get through."""
+
+    def _make_job_with_full_queue(self, maxsize=128):
+        import queue as _q
+        from audio_dl_ui import JobState, UrlState
+        url = "https://youtu.be/AAA"
+        job = JobState(
+            id="qb", media_format="mp3", output_dir="/tmp",
+            playlist=False, force=False, fragments=4, jobs=1,
+            url_states={url: UrlState(url=url)},
+            queue=_q.Queue(maxsize=maxsize),
+        )
+        # Pre-fill with progress events.
+        for i in range(maxsize):
+            job.queue.put({"type": "progress", "n": i})
+        assert job.queue.full()
+        return job
+
+    def test_progress_events_dropped_when_full(self):
+        from audio_dl_ui import _emit
+        job = self._make_job_with_full_queue()
+        # Pushing more progress events must NOT block and must NOT raise.
+        for _ in range(50):
+            _emit(job, {"type": "progress", "extra": True})
+        # Queue size is still capped.
+        assert job.queue.qsize() == 128
+
+    def test_terminal_events_get_through_when_full(self):
+        from audio_dl_ui import _emit
+        job = self._make_job_with_full_queue()
+        _emit(job, {"type": "job_completed", "job_id": "qb",
+                    "summary": {"completed": 0, "failed": 1, "cancelled": 0}})
+        # Drain everything and verify job_completed is present.
+        events = []
+        while not job.queue.empty():
+            events.append(job.queue.get_nowait())
+        types = [e["type"] for e in events]
+        assert "job_completed" in types
+
+    def test_post_jobs_creates_bounded_queue(self, tmp_path, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
+        body = _valid_body(output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        assert JOBS[job_id].queue.maxsize == 128

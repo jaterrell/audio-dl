@@ -98,9 +98,42 @@ JOBS: dict[str, JobState] = {}
 # Internals
 # ---------------------------------------------------------------------------
 
+# Terminal events must always be delivered even if the queue is full;
+# progress events can be dropped (they're throttled to ~5/sec/URL upstream
+# and a missed sample is harmless).
+_TERMINAL_EVENT_TYPES = frozenset({
+    "job_started", "url_started", "url_completed", "url_failed", "job_completed",
+})
+
+
 def _emit(job: JobState, event: dict) -> None:
-    """Push an SSE event onto the job's queue."""
-    job.queue.put(event)
+    """Push an SSE event onto the job's queue.
+
+    Terminal events (job/url lifecycle) use a bounded put with a short
+    timeout — if the queue is somehow full of progress events, give them a
+    chance to be drained before silently dropping the terminal.
+    Progress events use put_nowait and drop on Full.
+    """
+    if event.get("type") in _TERMINAL_EVENT_TYPES:
+        try:
+            job.queue.put(event, timeout=1.0)
+        except queue.Full:
+            # Last-resort: force-drop a progress event to make room. The
+            # alternative is silently losing a terminal event, which is
+            # worse (UI hangs).
+            try:
+                job.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                job.queue.put_nowait(event)
+            except queue.Full:
+                pass  # truly stuck; the worst-case outcome
+    else:
+        try:
+            job.queue.put_nowait(event)
+        except queue.Full:
+            pass  # drop excess progress
 
 
 def _require_csrf(request: Request) -> str:
@@ -602,7 +635,7 @@ async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dic
         fragments=req.fragments,
         jobs=req.jobs,
         url_states={u: UrlState(url=u) for u in urls},
-        queue=queue.Queue(),
+        queue=queue.Queue(maxsize=128),
     )
     JOBS[job_id] = job
     _start_job(job)
