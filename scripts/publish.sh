@@ -13,7 +13,7 @@ set -euo pipefail
 
 PRIVATE="https://github.com/jaterrell/audio-dl-internal.git"
 PUBLIC="https://github.com/jaterrell/audio-dl.git"
-EXCLUDE_PATHS=(.claude)
+EXCLUDE_PATHS=(.claude CLAUDE.md)
 
 DRY_RUN=0
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
