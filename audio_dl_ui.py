@@ -119,9 +119,12 @@ def _emit(job: JobState, event: dict) -> None:
         try:
             job.queue.put(event, timeout=1.0)
         except queue.Full:
-            # Last-resort: force-drop a progress event to make room. The
-            # alternative is silently losing a terminal event, which is
-            # worse (UI hangs).
+            # Last-resort: force-drop the oldest queued event to make room.
+            # The alternative is silently losing this terminal event, which
+            # is worse (UI hangs). Note: if the queue is somehow full of
+            # other terminals (only possible with many URLs + a disconnected
+            # client), this drops one of them — accepted tradeoff until the
+            # v1.3 per-subscriber broadcast rewrite.
             try:
                 job.queue.get_nowait()
             except queue.Empty:
