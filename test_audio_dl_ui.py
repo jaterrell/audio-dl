@@ -525,3 +525,53 @@ class TestRunOneSanitizeError:
         last = events[-1]
         assert last["type"] == "job_completed"
         assert last["summary"]["failed"] == 1
+
+
+# ---------------------------------------------------------------------------
+# /reveal dict-mutation race (Codex [P2])
+# ---------------------------------------------------------------------------
+
+class TestRevealSnapshotsJobs:
+    """The /reveal handler must snapshot JOBS before iterating, otherwise a
+    concurrent POST /jobs can mutate it mid-iteration and trigger
+    RuntimeError: dictionary changed size during iteration. The behavior we
+    care about is "no crash" — paths added DURING the iteration aren't
+    visible (that's the snapshot tradeoff, and it's acceptable; the client
+    can retry)."""
+
+    def test_reveal_survives_concurrent_jobs_mutation(self, tmp_path, monkeypatch):
+        import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, JobState
+        import queue as _q
+
+        # A job whose url_states.values() mutates JOBS mid-iteration.
+        # Without snapshotting outer JOBS.values(), this would raise
+        # RuntimeError: dictionary changed size during iteration.
+        class _MutatingStates(dict):
+            def values(self):  # type: ignore[override]
+                JOBS[f"mid-iter-{len(JOBS)}"] = JOBS["racer"]
+                return super().values()
+
+        racer = JobState(
+            id="racer", media_format="mp3", output_dir=str(tmp_path),
+            playlist=False, force=False, fragments=4, jobs=1,
+            url_states=_MutatingStates(),
+            queue=_q.Queue(),
+        )
+
+        JOBS.clear()
+        JOBS["racer"] = racer
+
+        called = []
+        monkeypatch.setattr(
+            ui.subprocess, "run",
+            lambda *a, **kw: called.append((a, kw)) or None,
+        )
+        try:
+            # The request itself must not 500; 400 (path not in known set)
+            # is acceptable. Pre-fix, this raises RuntimeError → 500.
+            r = client.post("/reveal", json={"path": "/anything"}, headers=_csrf_headers())
+            assert r.status_code != 500, f"got 500: {r.text}"
+            assert r.status_code in (200, 400)
+        finally:
+            JOBS.clear()

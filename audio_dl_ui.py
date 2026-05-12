@@ -665,11 +665,12 @@ async def reveal(req: RevealRequest, _csrf: str = Depends(_require_csrf)) -> dic
     """Open the file in Finder. Path must match a saved file in some current job."""
     # Path-traversal guard: only allow paths that match a saved file in
     # some current JobState. Prevents arbitrary `open -R` calls from the
-    # browser.
+    # browser. Snapshot JOBS first — concurrent POST /jobs can mutate it
+    # mid-iteration and raise RuntimeError otherwise.
     known = {
         p
-        for job in JOBS.values()
-        for st in job.url_states.values()
+        for job in list(JOBS.values())
+        for st in list(job.url_states.values())
         for p in st.paths
     }
     if req.path not in known:
