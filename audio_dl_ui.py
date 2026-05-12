@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import os
 import queue
@@ -407,11 +408,11 @@ _INDEX_HTML = """<!doctype html>
   const rows = $('rows');
 
   function rowFor(url) {
-    let row = document.getElementById('row-' + btoa(url).replace(/=/g, ''));
+    let row = document.getElementById('row-' + btoa(unescape(encodeURIComponent(url))).replace(/=/g, ''));
     if (row) return row;
     row = document.createElement('div');
     row.className = 'urlrow';
-    row.id = 'row-' + btoa(url).replace(/=/g, '');
+    row.id = 'row-' + btoa(unescape(encodeURIComponent(url))).replace(/=/g, '');
     const top = document.createElement('div'); top.className = 'top';
     const urlDiv = document.createElement('div'); urlDiv.className = 'url';
     urlDiv.textContent = url;
@@ -593,13 +594,16 @@ async def index() -> HTMLResponse:
     default_dir = getattr(app.state, "default_output_dir",
                           os.path.expanduser("~/Downloads/audio-dl"))
     token = getattr(app.state, "csrf_token", "")
-    html = (
+    html_doc = (
         _INDEX_HTML
         .replace("__FORMAT_OPTIONS__", options)
-        .replace("__DEFAULT_OUTPUT_DIR__", default_dir)
+        # Escape default_dir before injecting into an HTML attribute value.
+        # Without this, a launcher arg like --output-dir '"><script>...' breaks
+        # markup and creates a self-XSS sink.
+        .replace("__DEFAULT_OUTPUT_DIR__", html.escape(default_dir, quote=True))
         .replace("__CSRF_TOKEN__", token)
     )
-    return HTMLResponse(html)
+    return HTMLResponse(html_doc)
 
 
 @app.post("/jobs")
@@ -752,8 +756,11 @@ def main():
     app.state.default_output_dir = args.output_dir
 
     if not args.no_browser:
+        # 0.0.0.0 / :: are bind-all addresses, not routable from a browser.
+        # Open the browser to the loopback address instead.
+        browser_host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
         threading.Timer(
-            0.8, lambda: webbrowser.open(f"http://{args.host}:{args.port}")
+            0.8, lambda: webbrowser.open(f"http://{browser_host}:{args.port}")
         ).start()
 
     global uvicorn  # pylint: disable=global-statement

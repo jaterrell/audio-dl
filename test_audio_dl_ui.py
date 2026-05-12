@@ -630,3 +630,95 @@ class TestQueueBound:
         assert r.status_code == 200
         job_id = r.json()["job_id"]
         assert JOBS[job_id].queue.maxsize == 128
+
+
+# ---------------------------------------------------------------------------
+# P3 trio: HTML escape, btoa Unicode, 0.0.0.0 browser rewrite
+# ---------------------------------------------------------------------------
+
+class TestDefaultOutputDirEscaped:
+    """default_output_dir is templated into an HTML attribute. Crafted
+    values like '"><script>alert(1)</script>' must be escaped."""
+
+    def test_html_escape(self):
+        from audio_dl_ui import app as _app
+        original = getattr(_app.state, "default_output_dir", None)
+        try:
+            _app.state.default_output_dir = '"><script>alert(1)</script>'
+            r = client.get("/")
+            assert r.status_code == 200
+            body = r.text
+            assert "<script>alert(1)</script>" not in body
+            # html.escape with quote=True produces &lt;script&gt; and &quot;
+            assert "&lt;script&gt;" in body or "&amp;lt;script&amp;gt;" in body
+        finally:
+            if original is None:
+                if hasattr(_app.state, "default_output_dir"):
+                    delattr(_app.state, "default_output_dir")
+            else:
+                _app.state.default_output_dir = original
+
+
+class TestBtoaUnicodeSafe:
+    """The rowFor() JS uses btoa for row ids. Raw btoa throws on non-ASCII;
+    wrapping with unescape(encodeURIComponent(...)) makes it UTF-8 safe."""
+
+    def test_js_uses_utf8_safe_btoa(self):
+        # Structural assertion on the embedded HTML/JS.
+        from audio_dl_ui import _INDEX_HTML
+        assert "btoa(unescape(encodeURIComponent(url)))" in _INDEX_HTML
+        # No remaining raw btoa(url) without the wrap.
+        # (A simple grep for "btoa(url)" should NOT match.)
+        assert "btoa(url)" not in _INDEX_HTML
+
+
+class TestBrowserHostRewrite:
+    """When --host is a bind-all address (0.0.0.0 or ::), the auto-opened
+    browser URL must rewrite to 127.0.0.1 since 0.0.0.0 doesn't route in
+    most browsers."""
+
+    def test_zero_zero_zero_zero_rewrites(self, monkeypatch):
+        import audio_dl_ui as ui
+        import sys
+        called = []
+
+        def fake_timer(_delay, fn):
+            class _T:
+                def start(self):
+                    fn()
+            return _T()
+
+        monkeypatch.setattr(ui.threading, "Timer", fake_timer)
+        monkeypatch.setattr(ui, "webbrowser",
+                            type("X", (), {"open": lambda self, url: called.append(url)})())
+        monkeypatch.setattr(ui, "uvicorn",
+                            type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["audio-dl-ui", "--host", "0.0.0.0", "--allow-remote", "--port", "8765"],
+        )
+        ui.main()
+        assert called == ["http://127.0.0.1:8765"], called
+
+    def test_loopback_passes_through(self, monkeypatch):
+        import audio_dl_ui as ui
+        import sys
+        called = []
+
+        def fake_timer(_delay, fn):
+            class _T:
+                def start(self):
+                    fn()
+            return _T()
+
+        monkeypatch.setattr(ui.threading, "Timer", fake_timer)
+        monkeypatch.setattr(ui, "webbrowser",
+                            type("X", (), {"open": lambda self, url: called.append(url)})())
+        monkeypatch.setattr(ui, "uvicorn",
+                            type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(sys, "argv",
+                            ["audio-dl-ui", "--host", "127.0.0.1", "--port", "9000"])
+        ui.main()
+        assert called == ["http://127.0.0.1:9000"], called
