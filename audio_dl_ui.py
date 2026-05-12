@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import queue
+import secrets
 import subprocess
 import sys
 import threading
@@ -29,7 +30,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -40,6 +41,11 @@ from audio_dl import (
     sanitize_url,
     __version__,
 )
+
+# uvicorn is an optional dep (UI extra). Imported lazily in main() to avoid
+# ImportError when the package is installed without [ui]. Exposed as a
+# module-level name so tests can monkeypatch it before calling main().
+uvicorn = None  # type: ignore[assignment]  # pylint: disable=invalid-name
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +101,20 @@ JOBS: dict[str, JobState] = {}
 def _emit(job: JobState, event: dict) -> None:
     """Push an SSE event onto the job's queue."""
     job.queue.put(event)
+
+
+def _require_csrf(request: Request) -> str:
+    """Verify CSRF token from X-Audio-DL-Token header OR ?token= query param."""
+    expected = getattr(request.app.state, "csrf_token", None)
+    if not expected:
+        # Token not initialized (TestClient + no main() call). Block by default.
+        raise HTTPException(403, "CSRF token not configured.")
+    provided = request.headers.get("X-Audio-DL-Token") or request.query_params.get("token")
+    if not provided:
+        raise HTTPException(403, "Missing CSRF token.")
+    if not secrets.compare_digest(provided, expected):
+        raise HTTPException(403, "Invalid CSRF token.")
+    return provided
 
 
 def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], None]:
@@ -254,6 +274,7 @@ _INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="csrf-token" content="__CSRF_TOKEN__">
 <title>audio-dl</title>
 <style>
   :root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
@@ -339,6 +360,7 @@ _INDEX_HTML = """<!doctype html>
 
 <script>
 (() => {
+  const CSRF_TOKEN = "__CSRF_TOKEN__";
   const $ = (id) => document.getElementById(id);
   const sliderBind = (id) => {
     const el = $(id), out = $(id + '_val');
@@ -406,7 +428,7 @@ _INDEX_HTML = """<!doctype html>
       btn.className = 'reveal';
       btn.textContent = `Reveal: ${name}`;
       btn.onclick = () => fetch('/reveal', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
         body: JSON.stringify({path: paths[0]})
       });
       filesDiv.appendChild(btn);
@@ -416,7 +438,7 @@ _INDEX_HTML = """<!doctype html>
       btn.className = 'reveal';
       btn.textContent = `Reveal in Finder (${paths.length} files)`;
       btn.onclick = () => fetch('/reveal', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
         body: JSON.stringify({path: paths[0]})
       });
       filesDiv.appendChild(btn);
@@ -473,7 +495,7 @@ _INDEX_HTML = """<!doctype html>
     let resp;
     try {
       resp = await fetch('/jobs', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -489,7 +511,7 @@ _INDEX_HTML = """<!doctype html>
     }
     const {job_id} = await resp.json();
     currentJobId = job_id;
-    es = new EventSource('/jobs/' + job_id + '/events');
+    es = new EventSource('/jobs/' + job_id + '/events?token=' + encodeURIComponent(CSRF_TOKEN));
     es.onmessage = (m) => {
       if (!m.data) return;
       try { handleEvent(JSON.parse(m.data)); } catch (e) { console.error(e, m.data); }
@@ -499,7 +521,7 @@ _INDEX_HTML = """<!doctype html>
 
   $('cancel').addEventListener('click', () => {
     if (currentJobId) {
-      fetch('/jobs/' + currentJobId + '/cancel', {method: 'POST'});
+      fetch('/jobs/' + currentJobId + '/cancel', {method: 'POST', headers: {'X-Audio-DL-Token': CSRF_TOKEN}});
     }
   });
 })();
@@ -537,16 +559,18 @@ async def index() -> HTMLResponse:
     )
     default_dir = getattr(app.state, "default_output_dir",
                           os.path.expanduser("~/Downloads/audio-dl"))
+    token = getattr(app.state, "csrf_token", "")
     html = (
         _INDEX_HTML
         .replace("__FORMAT_OPTIONS__", options)
         .replace("__DEFAULT_OUTPUT_DIR__", default_dir)
+        .replace("__CSRF_TOKEN__", token)
     )
     return HTMLResponse(html)
 
 
 @app.post("/jobs")
-async def post_jobs(req: JobRequest) -> dict:
+async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dict:  # pylint: disable=unused-argument
     """Validate the request, register a JobState, return the job_id."""
     # Parse URLs (whitespace-separated, drop blanks).
     urls = [u.strip() for u in req.urls.split() if u.strip()]
@@ -608,7 +632,7 @@ async def _events_iter(job_id: str):
 
 
 @app.get("/jobs/{job_id}/events")
-async def get_events(job_id: str) -> StreamingResponse:
+async def get_events(job_id: str, _csrf: str = Depends(_require_csrf)) -> StreamingResponse:  # pylint: disable=unused-argument
     """Stream SSE events for a job."""
     if job_id not in JOBS:
         raise HTTPException(404, f"unknown job_id: {job_id}")
@@ -620,7 +644,7 @@ async def get_events(job_id: str) -> StreamingResponse:
 
 
 @app.post("/jobs/{job_id}/cancel")
-async def cancel_job(job_id: str) -> dict:
+async def cancel_job(job_id: str, _csrf: str = Depends(_require_csrf)) -> dict:  # pylint: disable=unused-argument
     """Cancel a job: set flag and shut down the executor."""
     job = JOBS.get(job_id)
     if job is None:
@@ -637,7 +661,7 @@ class RevealRequest(BaseModel):
 
 
 @app.post("/reveal")
-async def reveal(req: RevealRequest) -> dict:
+async def reveal(req: RevealRequest, _csrf: str = Depends(_require_csrf)) -> dict:  # pylint: disable=unused-argument
     """Open the file in Finder. Path must match a saved file in some current job."""
     # Path-traversal guard: only allow paths that match a saved file in
     # some current JobState. Prevents arbitrary `open -R` calls from the
@@ -670,7 +694,23 @@ def main():
         help="Default output directory shown in the form (default: ~/Downloads/audio-dl).",
     )
     parser.add_argument("--no-browser", action="store_true", help="Do not auto-open the browser.")
+    parser.add_argument(
+        "--allow-remote", action="store_true",
+        help="Allow binding to non-loopback hosts (LAN/public). Default refuses for safety.",
+    )
     args = parser.parse_args()
+
+    # Refuse non-loopback bind without explicit opt-in.
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not args.allow_remote:
+        print(
+            f"ERROR: --host {args.host!r} is not loopback. Add --allow-remote to bind to "
+            "non-loopback addresses (LAN/public). Loopback: 127.0.0.1, localhost, ::1.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Generate per-launch CSRF token.
+    app.state.csrf_token = secrets.token_urlsafe(32)
 
     check_dependencies()
 
@@ -682,7 +722,10 @@ def main():
             0.8, lambda: webbrowser.open(f"http://{args.host}:{args.port}")
         ).start()
 
-    import uvicorn  # pylint: disable=import-outside-toplevel
+    global uvicorn  # pylint: disable=global-statement
+    if uvicorn is None:
+        import uvicorn as _uvicorn  # pylint: disable=import-outside-toplevel
+        uvicorn = _uvicorn
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     except OSError as e:

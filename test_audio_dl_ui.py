@@ -9,8 +9,18 @@ from fastapi.testclient import TestClient
 
 from audio_dl_ui import app, JOBS
 
+# Set a known CSRF token at module load so all tests share the same value.
+app.state.csrf_token = "test-token"
 
 client = TestClient(app)
+
+
+def _csrf_headers():
+    return {"X-Audio-DL-Token": "test-token"}
+
+
+def _csrf_query():
+    return "?token=test-token"
 
 
 # ---------------------------------------------------------------------------
@@ -46,38 +56,39 @@ def _valid_body(**overrides):
 
 class TestPostJobsValidation:
     def test_empty_urls_400(self):
-        r = client.post("/jobs", json=_valid_body(urls=""))
+        r = client.post("/jobs", json=_valid_body(urls=""), headers=_csrf_headers())
         assert r.status_code == 400
         assert "url" in r.json()["detail"].lower()
 
     def test_whitespace_only_urls_400(self):
-        r = client.post("/jobs", json=_valid_body(urls="   \n  \t  "))
+        r = client.post("/jobs", json=_valid_body(urls="   \n  \t  "), headers=_csrf_headers())
         assert r.status_code == 400
 
     def test_bad_format_400(self):
-        r = client.post("/jobs", json=_valid_body(format="ogg"))
+        r = client.post("/jobs", json=_valid_body(format="ogg"), headers=_csrf_headers())
         assert r.status_code == 400
         assert "format" in r.json()["detail"].lower()
 
     def test_jobs_too_low_400(self):
-        r = client.post("/jobs", json=_valid_body(jobs=0))
+        r = client.post("/jobs", json=_valid_body(jobs=0), headers=_csrf_headers())
         assert r.status_code == 400
 
     def test_jobs_too_high_400(self):
-        r = client.post("/jobs", json=_valid_body(jobs=9))
+        r = client.post("/jobs", json=_valid_body(jobs=9), headers=_csrf_headers())
         assert r.status_code == 400
 
     def test_fragments_too_low_400(self):
-        r = client.post("/jobs", json=_valid_body(fragments=0))
+        r = client.post("/jobs", json=_valid_body(fragments=0), headers=_csrf_headers())
         assert r.status_code == 400
 
     def test_fragments_too_high_400(self):
-        r = client.post("/jobs", json=_valid_body(fragments=17))
+        r = client.post("/jobs", json=_valid_body(fragments=17), headers=_csrf_headers())
         assert r.status_code == 400
 
     def test_unwritable_output_dir_400(self):
         # /dev/null/foo will fail os.makedirs with NotADirectoryError on macOS/Linux
-        r = client.post("/jobs", json=_valid_body(output_dir="/dev/null/cant-make-this"))
+        r = client.post("/jobs", json=_valid_body(output_dir="/dev/null/cant-make-this"),
+                        headers=_csrf_headers())
         assert r.status_code == 400
         assert "output" in r.json()["detail"].lower()
 
@@ -91,7 +102,7 @@ class TestPostJobsHappyPath:
         import audio_dl_ui as ui
         monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
         body = _valid_body(output_dir=str(tmp_path))
-        r = client.post("/jobs", json=body)
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
         assert r.status_code == 200
         data = r.json()
         assert "job_id" in data
@@ -114,7 +125,7 @@ class TestPostJobsHappyPath:
             output_dir=str(tmp_path),
             jobs=2,
         )
-        r = client.post("/jobs", json=body)
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
         job_id = r.json()["job_id"]
         job = JOBS[job_id]
         assert job.media_format == "mp3"
@@ -230,11 +241,11 @@ class TestSseHappyPath:
             urls="https://youtu.be/AAA",
             output_dir=str(tmp_path),
         )
-        r = client.post("/jobs", json=body)
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
         job_id = r.json()["job_id"]
 
         # Drain SSE stream synchronously; TestClient yields chunks.
-        with client.stream("GET", f"/jobs/{job_id}/events", timeout=10) as resp:
+        with client.stream("GET", f"/jobs/{job_id}/events{_csrf_query()}", timeout=10) as resp:
             assert resp.status_code == 200
             events = []
             for line in resp.iter_lines():
@@ -265,7 +276,7 @@ class TestSseHappyPath:
 
 class TestCancel:
     def test_unknown_job_404(self):
-        r = client.post("/jobs/does-not-exist/cancel")
+        r = client.post("/jobs/does-not-exist/cancel", headers=_csrf_headers())
         assert r.status_code == 404
 
     def test_sets_flag_and_calls_shutdown(self, tmp_path, monkeypatch):
@@ -293,12 +304,12 @@ class TestCancel:
         monkeypatch.setattr(ui, "download_media", fake_download)
 
         body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
-        r = client.post("/jobs", json=body)
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
         job_id = r.json()["job_id"]
 
         # Wait for worker to start, then cancel.
         assert started.wait(timeout=2.0), "fake_download never started"
-        r2 = client.post(f"/jobs/{job_id}/cancel")
+        r2 = client.post(f"/jobs/{job_id}/cancel", headers=_csrf_headers())
         assert r2.status_code == 200
         assert r2.json() == {"ok": True}
 
@@ -322,7 +333,7 @@ class TestReveal:
             ui.subprocess, "run",
             lambda *a, **kw: called.append((a, kw)) or None,
         )
-        r = client.post("/reveal", json={"path": "/etc/passwd"})
+        r = client.post("/reveal", json={"path": "/etc/passwd"}, headers=_csrf_headers())
         assert r.status_code == 400
         assert not called, "subprocess.run must not be invoked for unknown paths"
 
@@ -349,7 +360,7 @@ class TestReveal:
                 ui.subprocess, "run",
                 lambda *a, **kw: called.append((a, kw)) or None,
             )
-            r = client.post("/reveal", json={"path": path})
+            r = client.post("/reveal", json={"path": path}, headers=_csrf_headers())
             assert r.status_code == 200
             assert r.json() == {"ok": True}
             assert called == [((["open", "-R", path],), {"check": False})]
@@ -363,5 +374,99 @@ class TestReveal:
 
 class TestSseUnknownJob:
     def test_unknown_job_404(self):
-        r = client.get("/jobs/does-not-exist/events")
+        r = client.get(f"/jobs/does-not-exist/events{_csrf_query()}")
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# CSRF protection
+# ---------------------------------------------------------------------------
+
+class TestCsrfProtection:
+    def _token(self):
+        # Force a known token onto app.state so we can test against it.
+        from audio_dl_ui import app  # pylint: disable=redefined-outer-name
+        app.state.csrf_token = "test-token"
+        return "test-token"
+
+    def test_post_jobs_without_token_403(self, tmp_path):
+        self._token()
+        body = _valid_body(output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body)
+        assert r.status_code == 403
+
+    def test_post_jobs_with_valid_token_200(self, tmp_path, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
+        token = self._token()
+        body = _valid_body(output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body, headers={"X-Audio-DL-Token": token})
+        assert r.status_code == 200
+
+    def test_post_jobs_with_invalid_token_403(self, tmp_path):
+        self._token()
+        body = _valid_body(output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body, headers={"X-Audio-DL-Token": "wrong"})
+        assert r.status_code == 403
+
+    def test_cancel_without_token_403(self):
+        self._token()
+        r = client.post("/jobs/doesnt-matter/cancel")
+        assert r.status_code == 403
+
+    def test_reveal_without_token_403(self):
+        self._token()
+        r = client.post("/reveal", json={"path": "/tmp/anything"})
+        assert r.status_code == 403
+
+    def test_events_without_token_403(self):
+        self._token()
+        r = client.get("/jobs/anything/events")
+        assert r.status_code == 403
+
+    def test_events_with_valid_token_query_200_or_404(self, tmp_path, monkeypatch):
+        # 404 if job doesn't exist, 200 if it does — either passes the auth gate.
+        # We just want to confirm 403 is NOT returned for a valid token.
+        token = self._token()
+        r = client.get(f"/jobs/unknown-job/events?token={token}")
+        assert r.status_code in (200, 404), f"got {r.status_code}, expected 200 or 404"
+
+    def test_events_with_invalid_token_query_403(self):
+        self._token()
+        r = client.get("/jobs/anything/events?token=wrong")
+        assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Bind guard (--allow-remote)
+# ---------------------------------------------------------------------------
+
+class TestBindGuard:
+    def test_loopback_bind_allowed(self, monkeypatch):
+        import audio_dl_ui as ui
+        import sys
+        # Stub the actual server start so main() doesn't block
+        monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(sys, "argv", ["audio-dl-ui", "--host", "127.0.0.1", "--no-browser"])
+        # Should NOT raise SystemExit
+        ui.main()
+
+    def test_nonloopback_bind_without_allow_remote_exits(self, monkeypatch):
+        import audio_dl_ui as ui
+        import sys
+        import pytest
+        monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(sys, "argv", ["audio-dl-ui", "--host", "0.0.0.0", "--no-browser"])
+        with pytest.raises(SystemExit) as exc:
+            ui.main()
+        assert exc.value.code == 1
+
+    def test_nonloopback_bind_with_allow_remote_allowed(self, monkeypatch):
+        import audio_dl_ui as ui
+        import sys
+        monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(sys, "argv",
+                            ["audio-dl-ui", "--host", "0.0.0.0", "--allow-remote", "--no-browser"])
+        ui.main()  # should not raise
