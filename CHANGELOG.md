@@ -3,29 +3,45 @@
 ## [Unreleased] — targeting v1.3.0
 
 ### Added
-- **macOS `.app` bundle (Phase 3a).** PyInstaller spec
-  (`audio-dl.spec`) + `scripts/build-app.sh` produce a double-clickable
-  `dist/audio-dl.app` that launches the web UI with no terminal window.
-  Dev / trusted-tester slice only:
-  - **Unsigned** (ad-hoc `codesign --sign -` to suppress runtime warnings).
-    Gatekeeper still blocks first launch — `xattr -d com.apple.quarantine`
-    or right-click→Open. Developer-ID signing + notarization is Phase 3b.
-  - **ffmpeg not bundled** — the `.app` shows a native macOS dialog
-    instructing the user to `brew install ffmpeg` if it's missing on PATH.
-    Embedded ffmpeg is Phase 3b.
-  - **macOS only** for now; PyInstaller can cross-target later.
+- **Phase 3b: embedded ffmpeg in the macOS `.app` bundle.** `ffmpeg` now
+  ships inside the bundle via
+  [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) (LGPLv2.1+,
+  attribution in [NOTICE.md](NOTICE.md), full license text in
+  [LICENSES/ffmpeg-LGPL-2.1.txt](LICENSES/ffmpeg-LGPL-2.1.txt)). Consumers
+  no longer need `brew install ffmpeg` for the .app to work. Bundle grew
+  from ~47 MB → ~95 MB for the static binary. **Caveat:** imageio-ffmpeg
+  ships only `ffmpeg`, not `ffprobe`; common audio/video flows work fine,
+  but advanced yt-dlp extractor paths that invoke ffprobe still need a
+  Homebrew install.
+- Phase 3a (carried over from the prior PR): bundle infra, entry-point
+  shim with Finder-argv stripping + Homebrew PATH bootstrap, `osascript`
+  dialog for missing dependencies, ad-hoc codesigning. Developer-ID
+  signing + notarization remain TODO blocks (Phase 3c).
 - `_app_entry.py` — entry-point shim that strips Finder-injected argv
-  (`-psn_NNN_MMM`) before delegating to `audio_dl_ui:main`. Bundled-only;
+  (`-psn_NNN_MMM`) and bootstraps `/opt/homebrew/bin` + `/usr/local/bin`
+  into `$PATH` before delegating to `audio_dl_ui:main`. Bundled-only;
   not part of the public API.
 - `audio_dl_ui._show_macos_dialog` + `_check_dependencies_gui` — `osascript`
   dialog surfaces missing-dependency errors when stderr is invisible
-  (the `.app` case). Terminal users get unchanged stderr output.
+  (the `.app` case). Falls through to stderr if the dialog itself can't be
+  displayed. Terminal users get unchanged stderr output.
+- `audio_dl._find_ffmpeg` — pure-ish resolver preferring the bundled
+  `imageio_ffmpeg.get_ffmpeg_exe()` over `shutil.which("ffmpeg")`. Resolution
+  feeds both `_check_dependencies` and `download_media` (via
+  `ffmpeg_location` in the yt-dlp opts dict).
+- `[project.optional-dependencies] app = ["imageio-ffmpeg"]` — build-time
+  dep for the bundle. Install with `pip install -e '.[ui,app]'`.
+- `NOTICE.md` — third-party attribution for the bundled LGPL ffmpeg.
 
 ### Changed
 - **`audio_dl.check_dependencies` refactored** into a pure
   `_check_dependencies() -> list[str]` plus a thin CLI wrapper. Behavior
   change: when both ffmpeg AND yt-dlp are missing, the CLI now reports
   both before exiting instead of short-circuiting on ffmpeg.
+- **`download_media` resolves ffmpeg per call** via `_find_ffmpeg()` and
+  passes the path to yt-dlp as `ffmpeg_location`. Power users with a
+  Homebrew ffmpeg keep that behavior (PATH fallback); bundle users get the
+  embedded binary automatically.
 
 ### Known issues (still deferred)
 - SSE single-consumer queue (carried over from v1.2.1) — browser reconnects

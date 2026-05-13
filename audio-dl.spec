@@ -23,6 +23,13 @@ _VERSION_MATCH = re.search(
 )
 VERSION = _VERSION_MATCH.group(1) if _VERSION_MATCH else "0.0.0"
 
+# Locate the imageio-ffmpeg static binary. Placing it in ``binaries=`` instead
+# of ``datas=`` is the PyInstaller convention for executables (advisor review
+# recommendation): it's processed through the binary pipeline so the exec bit
+# and Mach-O signatures are handled correctly on macOS.
+import imageio_ffmpeg  # noqa: E402  pylint: disable=wrong-import-position
+_FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
+
 # FastAPI / uvicorn / pydantic load plugins via importlib at runtime; static
 # analysis misses pieces. Use collect_submodules instead of a hand-maintained
 # hidden-imports list so the bundle stays robust across upstream releases
@@ -33,9 +40,21 @@ hiddenimports = (
     + collect_submodules("starlette")
     + collect_submodules("pydantic")
     + collect_submodules("pydantic_core")
+    # Phase 3b: ffmpeg ships inside the bundle via imageio-ffmpeg. The module
+    # is imported via try/except in audio_dl._find_ffmpeg, so PyInstaller's
+    # static analysis would otherwise drop it.
+    + ["imageio_ffmpeg"]
 )
 
-# Pick up data files (e.g. uvicorn's TLS defaults) that some hooks miss.
+# The static ffmpeg binary goes into ``binaries=`` so PyInstaller treats it as
+# an executable. ``get_ffmpeg_exe()`` returns the absolute path to the binary
+# inside the imageio_ffmpeg site-packages tree at build time; the second tuple
+# element is the destination directory INSIDE the bundle, matching the layout
+# audio_dl._find_ffmpeg expects when imageio_ffmpeg.get_ffmpeg_exe() is called
+# from a frozen process.
+binaries = [(_FFMPEG_BIN, "imageio_ffmpeg/binaries")]
+
+# Pick up data files (e.g. uvicorn's TLS defaults) that hooks may miss.
 datas = (
     collect_data_files("uvicorn")
     + collect_data_files("fastapi")
@@ -46,7 +65,7 @@ block_cipher = None
 a = Analysis(  # noqa: F821
     ["_app_entry.py"],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

@@ -121,6 +121,41 @@ def sanitize_url(url: str) -> str:
     return url
 
 
+def _find_ffmpeg() -> str | None:
+    """Locate an ffmpeg binary, preferring the bundled one over ``PATH``.
+
+    Returns the absolute path to a usable ffmpeg, or ``None`` if none found.
+
+    Resolution order:
+
+    1. ``imageio_ffmpeg.get_ffmpeg_exe()`` if the package is importable. This is
+       the path the macOS ``.app`` bundle uses — the binary is shipped inside
+       the .app via PyInstaller's ``collect_data_files``, so consumers don't
+       need ``brew install ffmpeg``.
+    2. ``shutil.which("ffmpeg")`` — the user's own install (Homebrew, apt,
+       a venv-local copy, etc.). Power users running the CLI keep working.
+
+    Pure-ish: imports and a single filesystem stat. No subprocess.
+    """
+    try:
+        import imageio_ffmpeg  # pylint: disable=import-outside-toplevel
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        # get_ffmpeg_exe returns the binary path; double-check it exists and is
+        # executable so a stale module install doesn't claim a non-existent file.
+        if exe and os.path.isfile(exe) and os.access(exe, os.X_OK):
+            return exe
+    except (ImportError, AttributeError, RuntimeError, OSError):
+        # ImportError: imageio_ffmpeg not installed (the CLI install path).
+        # AttributeError: future imageio-ffmpeg API churn.
+        # RuntimeError: imageio_ffmpeg.get_ffmpeg_exe() can raise this when the
+        #   bundled binary can't be located (e.g. wheel without binary on
+        #   a niche arch) — explicitly documented in their API.
+        # OSError: filesystem checks (isfile/access) on a path with weird
+        #   permissions or stat errors. We'd rather fall through than crash.
+        pass
+    return shutil.which("ffmpeg")
+
+
 def _check_dependencies() -> list[str]:
     """Return human-readable problem lines for missing dependencies.
 
@@ -133,7 +168,7 @@ def _check_dependencies() -> list[str]:
     are indented install hints intended for human reading.
     """
     problems: list[str] = []
-    if not shutil.which("ffmpeg"):
+    if _find_ffmpeg() is None:
         problems.append("ffmpeg is not installed or not on PATH.")
         problems.append("  macOS:   brew install ffmpeg")
         problems.append("  Ubuntu:  sudo apt install ffmpeg")
@@ -185,6 +220,7 @@ def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals,too-m
     cookies: str | None = None,
     cookies_from_browser: str | None = None,
     progress_hooks: list[Callable[[dict], None]] | None = None,
+    ffmpeg_location: str | None = None,
 ) -> dict:
     """
     Build the yt-dlp options dict for the requested media format.
@@ -259,6 +295,11 @@ def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals,too-m
         opts["cookiesfrombrowser"] = (cookies_from_browser,)
     if progress_hooks:
         opts["progress_hooks"] = progress_hooks
+    if ffmpeg_location:
+        # yt-dlp honours this both as the postprocessor binary path and as the
+        # directory containing ffmpeg/ffprobe. Passing the binary path itself
+        # works for both lookups on the supported yt-dlp range.
+        opts["ffmpeg_location"] = ffmpeg_location
 
     return opts
 
@@ -310,6 +351,11 @@ def download_media(  # pylint: disable=too-many-arguments,too-many-positional-ar
         cookies=cookies,
         cookies_from_browser=cookies_from_browser,
         progress_hooks=progress_hooks,
+        # Resolved once per call. Same lookup as _check_dependencies — if it
+        # returns None we just don't set ffmpeg_location and yt-dlp will fall
+        # back to PATH (which the dep check has already verified, or the user
+        # bypassed the check via the API).
+        ffmpeg_location=_find_ffmpeg(),
     )
 
     mode = "playlist" if playlist else "single track"

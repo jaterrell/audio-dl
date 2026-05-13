@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Build the macOS .app bundle for audio-dl (Phase 3a slice).
+# Build the macOS .app bundle for audio-dl.
 #
-# Audience: developers + trusted testers. The bundle this builds is:
-#   - Unsigned (ad-hoc signed only to suppress macOS runtime warnings).
-#   - Without embedded ffmpeg — the .app surfaces a native dialog telling
-#     the user to ``brew install ffmpeg`` if it's missing on PATH.
+# Phase 3b: ffmpeg now ships inside the bundle via imageio-ffmpeg, so the
+# .app no longer requires ``brew install ffmpeg`` to function. Bundle size
+# grew from ~47 MB → ~120 MB to accommodate the static ffmpeg binary.
 #
-# Signing/notarization for distribution to strangers is Phase 3b — hooks
-# are left as ``# TODO`` blocks below for when Joe's Developer ID is wired.
+# Still scoped to developers + trusted testers: the bundle is unsigned
+# (ad-hoc signed only to suppress macOS runtime warnings). Distribution-
+# grade Developer-ID signing + notarization remains a TODO block below.
 #
 # Prereqs (do once per dev machine):
 #   python -m pip install -e '.[ui]'
-#   python -m pip install pyinstaller
-#   brew install ffmpeg     # runtime dep, not build dep
+#   python -m pip install pyinstaller imageio-ffmpeg
 #
 # Usage:
 #   scripts/build-app.sh
@@ -36,6 +35,12 @@ fi
 if ! python -c "import audio_dl_ui" 2>/dev/null; then
     echo "ERROR: audio_dl_ui not importable — install the [ui] extra first." >&2
     echo "  python -m pip install -e '.[ui]'" >&2
+    exit 1
+fi
+
+if ! python -c "import imageio_ffmpeg" 2>/dev/null; then
+    echo "ERROR: imageio_ffmpeg not installed — required for the embedded ffmpeg binary." >&2
+    echo "  python -m pip install imageio-ffmpeg" >&2
     exit 1
 fi
 
@@ -69,8 +74,8 @@ If macOS Gatekeeper refuses, either right-click the bundle in Finder and
 choose Open, or strip the quarantine attribute:
   xattr -d com.apple.quarantine dist/audio-dl.app
 
-Reminder: the .app expects ffmpeg on PATH. If it's missing, a dialog will
-appear telling the user to run ``brew install ffmpeg`` — but this is Phase
-3a and we don't embed ffmpeg yet. Power-user UX, not consumer UX.
+ffmpeg is now embedded via imageio-ffmpeg (Phase 3b) — no Homebrew install
+required for the .app to function. License attribution: see LICENSES/
+inside the bundle.
 
 MSG

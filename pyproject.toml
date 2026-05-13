@@ -13,6 +13,9 @@ dependencies = ["yt-dlp"]
 
 [project.optional-dependencies]
 ui = ["fastapi", "uvicorn[standard]"]
+# Build-time deps for the macOS .app bundle (Phase 3b: embedded ffmpeg).
+# Install with: pip install -e '.[ui,app]'
+app = ["imageio-ffmpeg"]
 
 [project.scripts]
 audio-dl = "audio_dl:main"

@@ -10,6 +10,7 @@ from audio_dl import (
     VIDEO_FORMATS,
     _build_ydl_opts,
     _check_dependencies,
+    _find_ffmpeg,
     check_dependencies,
     detect_platform,
     sanitize_url,
@@ -423,17 +424,161 @@ class TestBuildYdlOptsProgressHooks:
 
 
 # ---------------------------------------------------------------------------
+# _build_ydl_opts — ffmpeg_location  (Phase 3b: embedded ffmpeg path)
+# ---------------------------------------------------------------------------
+
+class TestBuildYdlOptsFfmpegLocation:
+    def _opts(self, **kwargs):
+        defaults = {
+            "media_format": "mp3",
+            "output_dir": "/tmp/test",
+            "playlist": False,
+            "force": False,
+            "concurrent_fragments": 4,
+            "platform": "youtube",
+        }
+        defaults.update(kwargs)
+        return _build_ydl_opts(**defaults)
+
+    def test_passes_ffmpeg_location_through(self):
+        opts = self._opts(ffmpeg_location="/opt/audio-dl/bin/ffmpeg")
+        assert opts["ffmpeg_location"] == "/opt/audio-dl/bin/ffmpeg"
+
+    def test_absent_when_none(self):
+        opts = self._opts(ffmpeg_location=None)
+        assert "ffmpeg_location" not in opts
+
+    def test_absent_when_omitted(self):
+        opts = self._opts()
+        assert "ffmpeg_location" not in opts
+
+    def test_empty_string_is_treated_as_absent(self):
+        # Falsy values should be omitted so an empty string from a misbehaving
+        # resolver doesn't end up as ffmpeg_location="", which yt-dlp could
+        # interpret as a literal empty path search.
+        opts = self._opts(ffmpeg_location="")
+        assert "ffmpeg_location" not in opts
+
+
+# ---------------------------------------------------------------------------
+# _find_ffmpeg  (Phase 3b: bundled ffmpeg via imageio-ffmpeg + PATH fallback)
+# ---------------------------------------------------------------------------
+
+class TestFindFfmpeg:
+    def test_prefers_imageio_ffmpeg_when_present_and_executable(self, monkeypatch, tmp_path):
+        # Fake imageio_ffmpeg in sys.modules so the import inside _find_ffmpeg
+        # succeeds without the real package being installed in the test env.
+        fake_exe = tmp_path / "ffmpeg-bundled"
+        fake_exe.write_bytes(b"#!/bin/sh\necho hi\n")
+        fake_exe.chmod(0o755)
+
+        import sys
+        import types
+        fake_mod = types.SimpleNamespace(get_ffmpeg_exe=lambda: str(fake_exe))
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake_mod)
+
+        # shutil.which should NOT be consulted when imageio_ffmpeg succeeds.
+        def _boom(_name):
+            raise AssertionError("shutil.which called unexpectedly")
+        monkeypatch.setattr("audio_dl.shutil.which", _boom)
+        assert _find_ffmpeg() == str(fake_exe)
+
+    def test_falls_back_to_shutil_when_imageio_missing(self, monkeypatch):
+        import sys
+        sys.modules.pop("imageio_ffmpeg", None)
+        # Force ImportError on `import imageio_ffmpeg`.
+        import builtins
+        original_import = builtins.__import__
+        def picky_import(name, *args, **kwargs):
+            if name == "imageio_ffmpeg":
+                raise ImportError("simulated missing")
+            return original_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", picky_import)
+
+        monkeypatch.setattr("audio_dl.shutil.which",
+                            lambda n: "/opt/homebrew/bin/ffmpeg" if n == "ffmpeg" else None)
+        assert _find_ffmpeg() == "/opt/homebrew/bin/ffmpeg"
+
+    def test_returns_none_when_neither_available(self, monkeypatch):
+        import sys
+        import builtins
+        sys.modules.pop("imageio_ffmpeg", None)
+        original_import = builtins.__import__
+        def picky_import(name, *args, **kwargs):
+            if name == "imageio_ffmpeg":
+                raise ImportError("simulated missing")
+            return original_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", picky_import)
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _n: None)
+        assert _find_ffmpeg() is None
+
+    def test_falls_back_when_imageio_points_to_nonexistent_path(self, monkeypatch):
+        # Stale imageio_ffmpeg install that names a path the user deleted.
+        # We must not return the bogus path — fall through to PATH.
+        import sys
+        import types
+        fake_mod = types.SimpleNamespace(get_ffmpeg_exe=lambda: "/nonexistent/ffmpeg-stale")
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake_mod)
+        monkeypatch.setattr("audio_dl.shutil.which",
+                            lambda n: "/usr/local/bin/ffmpeg" if n == "ffmpeg" else None)
+        assert _find_ffmpeg() == "/usr/local/bin/ffmpeg"
+
+    def test_falls_back_on_api_drift(self, monkeypatch):
+        # If imageio_ffmpeg renames get_ffmpeg_exe in a future release we
+        # should gracefully fall back to PATH instead of AttributeError'ing.
+        import sys
+        import types
+        fake_mod = types.SimpleNamespace()  # no get_ffmpeg_exe at all
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake_mod)
+        monkeypatch.setattr("audio_dl.shutil.which",
+                            lambda n: "/usr/bin/ffmpeg" if n == "ffmpeg" else None)
+        assert _find_ffmpeg() == "/usr/bin/ffmpeg"
+
+    def test_falls_back_on_runtime_error_from_imageio(self, monkeypatch):
+        # imageio_ffmpeg.get_ffmpeg_exe() can raise RuntimeError when the
+        # bundled binary cannot be located (advisor review #2). Must not crash
+        # _check_dependencies or download_media — fall through to PATH.
+        import sys
+        import types
+        def boom():
+            raise RuntimeError("no binary in this wheel")
+        fake_mod = types.SimpleNamespace(get_ffmpeg_exe=boom)
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake_mod)
+        monkeypatch.setattr("audio_dl.shutil.which",
+                            lambda n: "/usr/bin/ffmpeg" if n == "ffmpeg" else None)
+        assert _find_ffmpeg() == "/usr/bin/ffmpeg"
+
+    def test_falls_back_on_os_error_during_filesystem_checks(self, monkeypatch):
+        # Permissions or stat errors during the isfile/access checks should
+        # not crash _find_ffmpeg.
+        import sys
+        import types
+        fake_mod = types.SimpleNamespace(get_ffmpeg_exe=lambda: "/some/path/ffmpeg")
+        monkeypatch.setitem(sys.modules, "imageio_ffmpeg", fake_mod)
+        def stat_boom(_p):
+            raise OSError("permission denied while stat'ing")
+        monkeypatch.setattr("audio_dl.os.path.isfile", stat_boom)
+        monkeypatch.setattr("audio_dl.shutil.which",
+                            lambda n: "/opt/homebrew/bin/ffmpeg" if n == "ffmpeg" else None)
+        assert _find_ffmpeg() == "/opt/homebrew/bin/ffmpeg"
+
+
+# ---------------------------------------------------------------------------
 # _check_dependencies  (pure function used by both CLI and the .app bundle UI)
 # ---------------------------------------------------------------------------
 
 class TestCheckDependencies:
+    # _check_dependencies delegates ffmpeg detection to _find_ffmpeg (Phase 3b)
+    # so the bundled-via-imageio-ffmpeg path counts as "ffmpeg present" too.
+    # These tests mock _find_ffmpeg directly to express what the dep check
+    # cares about (ffmpeg findable yes/no), independent of how we found it.
     def test_empty_when_all_present(self, monkeypatch):
-        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("audio_dl._find_ffmpeg", lambda: "/usr/bin/ffmpeg")
         monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
         assert not _check_dependencies()
 
     def test_reports_missing_ffmpeg(self, monkeypatch):
-        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl._find_ffmpeg", lambda: None)
         monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
         problems = _check_dependencies()
         assert problems, "expected at least one problem line"
@@ -441,23 +586,33 @@ class TestCheckDependencies:
         assert any("brew install ffmpeg" in line for line in problems)
 
     def test_reports_missing_yt_dlp(self, monkeypatch):
-        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("audio_dl._find_ffmpeg", lambda: "/usr/bin/ffmpeg")
         monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: None)
         problems = _check_dependencies()
         assert any("yt-dlp is not installed" in line for line in problems)
         assert any("pip install yt-dlp" in line for line in problems)
 
     def test_reports_both_when_both_missing(self, monkeypatch):
-        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl._find_ffmpeg", lambda: None)
         monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: None)
         problems = _check_dependencies()
         assert any("ffmpeg" in line for line in problems)
         assert any("yt-dlp" in line for line in problems)
 
+    def test_bundled_ffmpeg_counts_as_present(self, monkeypatch):
+        # Even with PATH-ffmpeg absent, a bundled imageio binary should let
+        # the .app start. _find_ffmpeg() returning that binary is enough.
+        monkeypatch.setattr(
+            "audio_dl._find_ffmpeg",
+            lambda: "/Applications/audio-dl.app/Contents/Resources/imageio_ffmpeg/binaries/ffmpeg",
+        )
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
+        assert not _check_dependencies()
+
     def test_indented_lines_for_install_hints(self, monkeypatch):
         # Install-hint lines must be indented so callers can distinguish them
         # from summary lines (CLI prefixes only summaries with "ERROR: ").
-        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl._find_ffmpeg", lambda: None)
         monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
         problems = _check_dependencies()
         hint_lines = [line for line in problems if "brew install" in line
@@ -468,13 +623,13 @@ class TestCheckDependencies:
 
 class TestCheckDependenciesCliWrapper:
     def test_returns_silently_when_all_present(self, monkeypatch, capsys):
-        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("audio_dl._find_ffmpeg", lambda: "/usr/bin/ffmpeg")
         monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
         check_dependencies()
         assert capsys.readouterr().out == ""
 
     def test_prints_error_prefix_and_exits_when_missing(self, monkeypatch, capsys):
-        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl._find_ffmpeg", lambda: None)
         monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
         with pytest.raises(SystemExit) as excinfo:
             check_dependencies()

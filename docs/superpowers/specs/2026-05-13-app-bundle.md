@@ -1,9 +1,11 @@
-# audio-dl `.app` Bundle — design spec (Phase 3a)
+# audio-dl `.app` Bundle — design spec (Phase 3a + 3b)
 
-**Status:** approved (Joe's roadmap; this doc pins the decisions)
+**Status:** Phase 3a shipped (PR #11 → `a227c2f`). Phase 3b in flight on
+`feat/phase-3b-embed-ffmpeg`. Codesigning + notarization (Phase 3c) still
+pending Joe's Developer ID.
 **Date:** 2026-05-13
 **Owner:** Joe Terrell
-**Target release:** v1.3.0 — **dev / trusted-tester slice only**
+**Target release:** v1.3.0
 
 ## Purpose
 
@@ -30,13 +32,13 @@ The README and CHANGELOG framing must reflect this honestly. **Do not market thi
 - All existing tests still pass. New tests cover the ffmpeg-missing GUI path and the bundle entry-point's importability.
 - Pylint ≥ 9.5.
 
-## Non-goals (deferred to 3b / later)
+## Non-goals (deferred to 3c / later)
 
-- **Codesigning + notarization.** Hooks left in `build-app.sh` for Joe's Developer ID + notarytool. Without these, distribution requires `xattr -d com.apple.quarantine audio-dl.app` post-download — documented but not fixed.
-- **Embedded ffmpeg.** Tester installs via Homebrew. Embedding via `imageio-ffmpeg` (or a vendored static binary) is its own scope — license compliance, ~75 MB bundle inflation, path-resolution code in `download_media`.
+- **Codesigning + notarization (3c).** Hooks left in `build-app.sh` for Joe's Developer ID + notarytool. Without these, distribution requires `xattr -d com.apple.quarantine audio-dl.app` post-download — documented but not fixed.
+- **~~Embedded ffmpeg.~~** **Done in Phase 3b** via `imageio-ffmpeg` (LGPLv2.1+ static binary, BSD-2 wrapper). Bundle grew ~47 MB → ~95 MB. Path resolution lives in `_find_ffmpeg()` and feeds both the dep check and `download_media`. Attribution in `NOTICE.md`; full LGPL text in `LICENSES/ffmpeg-LGPL-2.1.txt`. **Caveat:** imageio-ffmpeg ships only `ffmpeg`, not `ffprobe`. Common audio/video flows work (verified end-to-end with mp3 + mp4 on a stripped `PATH`); advanced yt-dlp extractor paths that invoke ffprobe will fall through to whatever `ffprobe` is on `PATH` and fail if none. Users hitting that should `brew install ffmpeg`. A future phase could add a bundled ffprobe (e.g. via a different packaging) if the demand materializes.
 - **Cross-platform bundle.** PyInstaller can target Windows/Linux, but the build script is mac-only and Info.plist is mac-specific. Windows/Linux follow when there's demand.
 - **First-run download of yt-dlp updates.** The bundle ships with a pinned yt-dlp; users update by rebuilding. Self-update is its own scope.
-- **Universal2 (arm64 + x86_64).** Build script targets the host arch; cross-arch is a Phase 3b/4 concern.
+- **Universal2 (arm64 + x86_64).** Build script targets the host arch; cross-arch is a Phase 3c/4 concern.
 
 ---
 
