@@ -73,3 +73,28 @@ audio-dl-ui --no-browser             # don't auto-open the browser
 Bind defaults to `127.0.0.1` — no network exposure. Credentials for gated
 content (cookies, SoundCloud OAuth) aren't surfaced in the UI; use the CLI
 for those.
+
+## macOS `.app` bundle (dev / trusted-tester)
+
+Build a double-clickable `.app` that launches the web UI with no terminal
+window. Currently a power-user artifact — see "Caveats" below.
+
+```bash
+python -m pip install -e '.[ui]'   # one-time
+python -m pip install pyinstaller  # one-time
+brew install ffmpeg                # required at runtime
+scripts/build-app.sh               # produces dist/audio-dl.app
+open dist/audio-dl.app
+```
+
+**Caveats (this is Phase 3a):**
+
+- **Unsigned.** macOS Gatekeeper will block first launch on a Mac that
+  didn't build it. Workaround: right-click the bundle → Open, or run
+  `xattr -d com.apple.quarantine dist/audio-dl.app` once. Developer-ID
+  signing + notarization is Phase 3b.
+- **ffmpeg not bundled.** The `.app` shows a native dialog telling the
+  user to `brew install ffmpeg` if it's missing on PATH. Embedded ffmpeg
+  is Phase 3b.
+- **macOS only.** PyInstaller can target Windows/Linux too, but the build
+  script and `Info.plist` are macOS-specific.

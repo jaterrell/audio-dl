@@ -121,19 +121,39 @@ def sanitize_url(url: str) -> str:
     return url
 
 
-def check_dependencies():
-    """Verify yt-dlp and ffmpeg are available."""
-    if not shutil.which("ffmpeg"):
-        print("ERROR: ffmpeg is not installed or not on PATH.")
-        print("  macOS:   brew install ffmpeg")
-        print("  Ubuntu:  sudo apt install ffmpeg")
-        print("  Windows: https://ffmpeg.org/download.html")
-        sys.exit(1)
+def _check_dependencies() -> list[str]:
+    """Return human-readable problem lines for missing dependencies.
 
+    Empty list means everything is present. Pure function: no stderr, no
+    ``sys.exit``. GUI callers (the macOS ``.app`` bundle in particular) need
+    to surface failures through a dialog instead of stdout/stderr, so the
+    detection logic must be callable without side effects.
+
+    First line of each problem is a one-sentence summary; subsequent lines
+    are indented install hints intended for human reading.
+    """
+    problems: list[str] = []
+    if not shutil.which("ffmpeg"):
+        problems.append("ffmpeg is not installed or not on PATH.")
+        problems.append("  macOS:   brew install ffmpeg")
+        problems.append("  Ubuntu:  sudo apt install ffmpeg")
+        problems.append("  Windows: https://ffmpeg.org/download.html")
     if importlib.util.find_spec("yt_dlp") is None:
-        print("ERROR: yt-dlp is not installed.")
-        print("  Install it with:  pip install yt-dlp")
-        sys.exit(1)
+        problems.append("yt-dlp is not installed.")
+        problems.append("  Install it with:  pip install yt-dlp")
+    return problems
+
+
+def check_dependencies() -> None:
+    """CLI dep check: print to stderr and ``sys.exit(1)`` if anything is missing."""
+    problems = _check_dependencies()
+    if not problems:
+        return
+    for line in problems:
+        # Indented continuation lines pass through unchanged; summary lines
+        # get the legacy "ERROR: " prefix so CLI output is byte-identical.
+        print(line if line.startswith(" ") else f"ERROR: {line}")
+    sys.exit(1)
 
 
 def _collect_final_paths(info: dict) -> list[str]:

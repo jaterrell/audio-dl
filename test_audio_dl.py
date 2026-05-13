@@ -1,10 +1,16 @@
-# pylint: disable=missing-function-docstring,missing-class-docstring
-"""Tests for audio_dl.py — sanitize_url, detect_platform, _build_ydl_opts."""
+# pylint: disable=missing-function-docstring,missing-class-docstring,too-few-public-methods
+# pylint: disable=import-outside-toplevel,protected-access
+"""Tests for audio_dl.py — sanitize_url, detect_platform, _build_ydl_opts,
+_check_dependencies."""
+import pytest
+
 from audio_dl import (
     ALL_FORMATS,
     AUDIO_FORMATS,
     VIDEO_FORMATS,
     _build_ydl_opts,
+    _check_dependencies,
+    check_dependencies,
     detect_platform,
     sanitize_url,
 )
@@ -414,3 +420,185 @@ class TestBuildYdlOptsProgressHooks:
     def test_progress_hooks_omitted_default(self):
         opts = self._opts()
         assert "progress_hooks" not in opts
+
+
+# ---------------------------------------------------------------------------
+# _check_dependencies  (pure function used by both CLI and the .app bundle UI)
+# ---------------------------------------------------------------------------
+
+class TestCheckDependencies:
+    def test_empty_when_all_present(self, monkeypatch):
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
+        assert not _check_dependencies()
+
+    def test_reports_missing_ffmpeg(self, monkeypatch):
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
+        problems = _check_dependencies()
+        assert problems, "expected at least one problem line"
+        assert any("ffmpeg is not installed" in line for line in problems)
+        assert any("brew install ffmpeg" in line for line in problems)
+
+    def test_reports_missing_yt_dlp(self, monkeypatch):
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: None)
+        problems = _check_dependencies()
+        assert any("yt-dlp is not installed" in line for line in problems)
+        assert any("pip install yt-dlp" in line for line in problems)
+
+    def test_reports_both_when_both_missing(self, monkeypatch):
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: None)
+        problems = _check_dependencies()
+        assert any("ffmpeg" in line for line in problems)
+        assert any("yt-dlp" in line for line in problems)
+
+    def test_indented_lines_for_install_hints(self, monkeypatch):
+        # Install-hint lines must be indented so callers can distinguish them
+        # from summary lines (CLI prefixes only summaries with "ERROR: ").
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
+        problems = _check_dependencies()
+        hint_lines = [line for line in problems if "brew install" in line
+                      or "apt install" in line or "ffmpeg.org" in line]
+        assert hint_lines
+        assert all(line.startswith(" ") for line in hint_lines)
+
+
+class TestCheckDependenciesCliWrapper:
+    def test_returns_silently_when_all_present(self, monkeypatch, capsys):
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
+        check_dependencies()
+        assert capsys.readouterr().out == ""
+
+    def test_prints_error_prefix_and_exits_when_missing(self, monkeypatch, capsys):
+        monkeypatch.setattr("audio_dl.shutil.which", lambda _name: None)
+        monkeypatch.setattr("audio_dl.importlib.util.find_spec", lambda _mod: object())
+        with pytest.raises(SystemExit) as excinfo:
+            check_dependencies()
+        assert excinfo.value.code == 1
+        out = capsys.readouterr().out
+        assert out.startswith("ERROR: ffmpeg")
+        assert "  macOS:   brew install ffmpeg" in out
+
+
+# ---------------------------------------------------------------------------
+# Bundle entry shim and PyInstaller spec
+# ---------------------------------------------------------------------------
+
+class TestAppEntry:
+    def test_imports_without_side_effects(self):
+        """``import _app_entry`` must not call main() or alter sys.argv."""
+        import sys
+        import importlib
+        original_argv = list(sys.argv)
+        try:
+            sys.modules.pop("_app_entry", None)
+            mod = importlib.import_module("_app_entry")
+        finally:
+            sys.argv = original_argv
+        assert callable(getattr(mod, "_main", None))
+
+    def test_strips_argv_before_delegating(self, monkeypatch):
+        """_main() must clear Finder-injected argv before calling audio_dl_ui.main."""
+        import sys
+        import importlib
+        mod = importlib.import_module("_app_entry")
+        captured: dict[str, list[str]] = {}
+
+        def fake_main():
+            captured["argv"] = list(sys.argv)
+
+        monkeypatch.setattr("audio_dl_ui.main", fake_main)
+        monkeypatch.setattr(sys, "argv", ["audio-dl", "-psn_0_12345", "garbage"])
+        mod._main()
+        assert captured["argv"] == ["audio-dl"]
+
+
+class TestAppEntryHomebrewPathBootstrap:
+    """codex review-1 REQUIRED #1: Finder-launched .app does not inherit shell PATH,
+    so Homebrew prefixes are missing and ffmpeg appears absent. The shim must
+    prepend the Homebrew prefixes before audio_dl_ui imports."""
+
+    def test_prepends_apple_silicon_and_intel_prefixes_when_missing(self):
+        import importlib
+        mod = importlib.import_module("_app_entry")
+        env = {"PATH": "/usr/bin:/bin"}
+        mod._bootstrap_homebrew_path(env)
+        parts = env["PATH"].split(":")
+        assert "/opt/homebrew/bin" in parts
+        assert "/usr/local/bin" in parts
+        # Apple Silicon (priority) must come before Intel.
+        assert parts.index("/opt/homebrew/bin") < parts.index("/usr/local/bin")
+        # User's existing entries must be preserved.
+        assert "/usr/bin" in parts
+        assert "/bin" in parts
+
+    def test_idempotent_when_prefixes_already_present(self):
+        import importlib
+        mod = importlib.import_module("_app_entry")
+        env = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin"}
+        before = env["PATH"]
+        mod._bootstrap_homebrew_path(env)
+        # No duplicate entries, no reorder of existing ones.
+        assert env["PATH"] == before
+
+    def test_handles_empty_path(self):
+        import importlib
+        mod = importlib.import_module("_app_entry")
+        env: dict[str, str] = {}
+        mod._bootstrap_homebrew_path(env)
+        parts = env["PATH"].split(":")
+        assert "/opt/homebrew/bin" in parts
+        assert "/usr/local/bin" in parts
+
+    def test_main_calls_bootstrap_before_audio_dl_ui_import(self, monkeypatch):
+        """The bootstrap must run before audio_dl_ui.main is invoked so the
+        dependency check inside main() sees the updated PATH."""
+        import sys
+        import importlib
+        mod = importlib.import_module("_app_entry")
+        order: list[str] = []
+
+        original_bootstrap = mod._bootstrap_homebrew_path
+        def traced_bootstrap(env=None):
+            order.append("bootstrap")
+            original_bootstrap(env)
+        monkeypatch.setattr(mod, "_bootstrap_homebrew_path", traced_bootstrap)
+
+        def fake_main():
+            order.append("ui_main")
+        monkeypatch.setattr("audio_dl_ui.main", fake_main)
+        monkeypatch.setattr(sys, "argv", ["audio-dl"])
+        mod._main()
+        assert order == ["bootstrap", "ui_main"], order
+
+
+class TestPyInstallerSpec:
+    def test_spec_file_is_valid_python(self):
+        """audio-dl.spec must compile — PyInstaller globals are injected at run time."""
+        import pathlib
+        import py_compile
+        import tempfile
+        spec = pathlib.Path(__file__).parent / "audio-dl.spec"
+        assert spec.exists(), "audio-dl.spec missing"
+        with tempfile.NamedTemporaryFile(suffix=".pyc", delete=True) as tmp:
+            # ``doraise=True`` raises py_compile.PyCompileError on syntax errors.
+            py_compile.compile(str(spec), cfile=tmp.name, doraise=True)
+
+    def test_spec_references_version_source(self):
+        """Spec must read __version__ from audio_dl.py — single source of truth."""
+        import pathlib
+        spec_text = (pathlib.Path(__file__).parent / "audio-dl.spec").read_text()
+        # The regex-read mechanism keeps the bundle version in sync with the
+        # CLI version without a third place to bump.
+        assert "audio_dl.py" in spec_text
+        assert "__version__" in spec_text
+
+    def test_spec_targets_app_entry_shim(self):
+        """Spec must analyse _app_entry.py, not audio_dl_ui.py directly."""
+        import pathlib
+        spec_text = (pathlib.Path(__file__).parent / "audio-dl.spec").read_text()
+        assert "_app_entry.py" in spec_text

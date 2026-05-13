@@ -1,5 +1,36 @@
 # Changelog
 
+## [Unreleased] — targeting v1.3.0
+
+### Added
+- **macOS `.app` bundle (Phase 3a).** PyInstaller spec
+  (`audio-dl.spec`) + `scripts/build-app.sh` produce a double-clickable
+  `dist/audio-dl.app` that launches the web UI with no terminal window.
+  Dev / trusted-tester slice only:
+  - **Unsigned** (ad-hoc `codesign --sign -` to suppress runtime warnings).
+    Gatekeeper still blocks first launch — `xattr -d com.apple.quarantine`
+    or right-click→Open. Developer-ID signing + notarization is Phase 3b.
+  - **ffmpeg not bundled** — the `.app` shows a native macOS dialog
+    instructing the user to `brew install ffmpeg` if it's missing on PATH.
+    Embedded ffmpeg is Phase 3b.
+  - **macOS only** for now; PyInstaller can cross-target later.
+- `_app_entry.py` — entry-point shim that strips Finder-injected argv
+  (`-psn_NNN_MMM`) before delegating to `audio_dl_ui:main`. Bundled-only;
+  not part of the public API.
+- `audio_dl_ui._show_macos_dialog` + `_check_dependencies_gui` — `osascript`
+  dialog surfaces missing-dependency errors when stderr is invisible
+  (the `.app` case). Terminal users get unchanged stderr output.
+
+### Changed
+- **`audio_dl.check_dependencies` refactored** into a pure
+  `_check_dependencies() -> list[str]` plus a thin CLI wrapper. Behavior
+  change: when both ffmpeg AND yt-dlp are missing, the CLI now reports
+  both before exiting instead of short-circuiting on ffmpeg.
+
+### Known issues (still deferred)
+- SSE single-consumer queue (carried over from v1.2.1) — browser reconnects
+  may split events between connections.
+
 ## v1.2.1 — 2026-05-11
 
 ### Fixed

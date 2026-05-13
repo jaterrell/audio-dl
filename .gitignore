@@ -6,6 +6,10 @@ __pycache__/
 venv/
 .env*
 
+# PyInstaller .app bundle outputs
+build/
+dist/
+
 # macOS
 .DS_Store
 

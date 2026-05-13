@@ -37,7 +37,7 @@ from pydantic import BaseModel
 
 from audio_dl import (
     ALL_FORMATS,
-    check_dependencies,
+    _check_dependencies,
     download_media,
     sanitize_url,
     __version__,
@@ -720,6 +720,66 @@ async def reveal(req: RevealRequest, _csrf: str = Depends(_require_csrf)) -> dic
 
 
 # ---------------------------------------------------------------------------
+# Dependency pre-flight (GUI-aware)
+# ---------------------------------------------------------------------------
+
+def _show_macos_dialog(title: str, message: str) -> bool:
+    """Display a native macOS dialog via ``osascript``.
+
+    Used by the ``.app`` bundle path where stderr is invisible — without this
+    the user double-clicks the app and sees nothing on missing dependencies.
+    Returns True if the dialog was displayed; False on any failure (we're
+    about to ``sys.exit`` anyway so the caller has nothing useful to do with
+    the error).
+    """
+    if sys.platform != "darwin":
+        return False
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace('"', '\\"')
+
+    script = (
+        f'display dialog "{_esc(message)}" with title "{_esc(title)}" '
+        f'buttons {{"OK"}} default button "OK" with icon stop'
+    )
+    try:
+        result = subprocess.run(["osascript", "-e", script], check=False, timeout=60)
+        # osascript returns nonzero when AppleScript rejects the source (syntax
+        # error, unknown keyword on an old macOS, etc.). Treat nonzero as a
+        # failed display so the caller falls through to the stderr path.
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def _check_dependencies_gui() -> None:
+    """Pre-flight dep check that surfaces failures sensibly for both shells and the ``.app``.
+
+    Terminal users get CLI-parity stderr output. The bundled ``.app`` (no TTY)
+    gets a native macOS dialog so a missing ffmpeg doesn't manifest as silent
+    failure. If the dialog itself can't be shown (osascript missing on a
+    Frankenstein system, syntax-rejected on a future macOS) we fall through
+    to the stderr path — at least system-log capture will record the cause.
+    Always exits non-zero on missing deps.
+    """
+    problems = _check_dependencies()
+    if not problems:
+        return
+
+    no_tty = not (sys.stderr and sys.stderr.isatty())
+    if no_tty and sys.platform == "darwin":
+        message = "audio-dl can't start:\n\n" + "\n".join(problems)
+        if _show_macos_dialog("audio-dl — missing dependency", message):
+            sys.exit(1)
+        # Dialog refused — fall through to stderr so the failure is at least
+        # captured somewhere a developer can find it.
+
+    for line in problems:
+        print(line if line.startswith(" ") else f"ERROR: {line}", file=sys.stderr)
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -753,7 +813,7 @@ def main():
     # Generate per-launch CSRF token.
     app.state.csrf_token = secrets.token_urlsafe(32)
 
-    check_dependencies()
+    _check_dependencies_gui()
 
     # Stash the default output dir for the index page to read.
     app.state.default_output_dir = args.output_dir

@@ -460,7 +460,7 @@ class TestBindGuard:
         import sys
         # Stub the actual server start so main() doesn't block
         monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
-        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
         monkeypatch.setattr(sys, "argv", ["audio-dl-ui", "--host", "127.0.0.1", "--no-browser"])
         # Should NOT raise SystemExit
         ui.main()
@@ -479,7 +479,7 @@ class TestBindGuard:
         import audio_dl_ui as ui
         import sys
         monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
-        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
         monkeypatch.setattr(sys, "argv",
                             ["audio-dl-ui", "--host", "0.0.0.0", "--allow-remote", "--no-browser"])
         ui.main()  # should not raise
@@ -693,7 +693,7 @@ class TestBrowserHostRewrite:
                             type("X", (), {"open": lambda self, url: called.append(url)})())
         monkeypatch.setattr(ui, "uvicorn",
                             type("X", (), {"run": lambda *a, **kw: None})())
-        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
         monkeypatch.setattr(
             sys, "argv",
             ["audio-dl-ui", "--host", "0.0.0.0", "--allow-remote", "--port", "8765"],
@@ -717,8 +717,190 @@ class TestBrowserHostRewrite:
                             type("X", (), {"open": lambda self, url: called.append(url)})())
         monkeypatch.setattr(ui, "uvicorn",
                             type("X", (), {"run": lambda *a, **kw: None})())
-        monkeypatch.setattr(ui, "check_dependencies", lambda: None)
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
         monkeypatch.setattr(sys, "argv",
                             ["audio-dl-ui", "--host", "127.0.0.1", "--port", "9000"])
         ui.main()
         assert called == ["http://127.0.0.1:9000"], called
+
+
+# ---------------------------------------------------------------------------
+# _check_dependencies_gui — GUI-aware dependency pre-flight
+# ---------------------------------------------------------------------------
+
+class TestCheckDependenciesGui:
+    def test_returns_silently_when_all_present(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "_check_dependencies", lambda: [])
+        # Should not raise, should not exit.
+        ui._check_dependencies_gui()
+
+    def test_no_tty_on_darwin_shows_dialog(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "_check_dependencies",
+                            lambda: ["ffmpeg is not installed or not on PATH.",
+                                     "  macOS:   brew install ffmpeg"])
+        monkeypatch.setattr(ui.sys, "platform", "darwin")
+
+        # Force no-TTY.
+        class _FakeStderr:
+            def isatty(self):
+                return False
+            def write(self, _s):
+                pass
+            def flush(self):
+                pass
+        monkeypatch.setattr(ui.sys, "stderr", _FakeStderr())
+
+        captured = {}
+        def fake_dialog(title, message):
+            captured["title"] = title
+            captured["message"] = message
+            return True
+        monkeypatch.setattr(ui, "_show_macos_dialog", fake_dialog)
+
+        with pytest.raises(SystemExit) as excinfo:
+            ui._check_dependencies_gui()
+        assert excinfo.value.code == 1
+        assert "audio-dl" in captured["title"]
+        assert "ffmpeg" in captured["message"]
+        assert "brew install ffmpeg" in captured["message"]
+
+    def test_tty_attached_prints_to_stderr(self, monkeypatch):
+        import io
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "_check_dependencies",
+                            lambda: ["ffmpeg is not installed or not on PATH.",
+                                     "  macOS:   brew install ffmpeg"])
+
+        class _FakeStderr(io.StringIO):
+            def isatty(self):
+                return True
+
+        fake_stderr = _FakeStderr()
+        monkeypatch.setattr(ui.sys, "stderr", fake_stderr)
+
+        # Dialog must NOT fire on TTY-attached runs.
+        def boom(_t, _m):
+            raise AssertionError("dialog should not be shown when stderr is a TTY")
+        monkeypatch.setattr(ui, "_show_macos_dialog", boom)
+
+        with pytest.raises(SystemExit) as excinfo:
+            ui._check_dependencies_gui()
+        assert excinfo.value.code == 1
+        out = fake_stderr.getvalue()
+        assert "ERROR: ffmpeg" in out
+        assert "  macOS:   brew install ffmpeg" in out
+
+    def test_no_tty_darwin_dialog_failed_falls_through_to_stderr(self, monkeypatch):
+        # If osascript is unavailable / rejected the script, _show_macos_dialog
+        # returns False. We must still write the problem to stderr so a system
+        # log captures the cause — not exit silently.
+        import io
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "_check_dependencies",
+                            lambda: ["ffmpeg is not installed or not on PATH."])
+        monkeypatch.setattr(ui.sys, "platform", "darwin")
+
+        class _FakeStderr(io.StringIO):
+            def isatty(self):
+                return False
+
+        fake_stderr = _FakeStderr()
+        monkeypatch.setattr(ui.sys, "stderr", fake_stderr)
+        monkeypatch.setattr(ui, "_show_macos_dialog", lambda _t, _m: False)
+
+        with pytest.raises(SystemExit) as excinfo:
+            ui._check_dependencies_gui()
+        assert excinfo.value.code == 1
+        assert "ERROR: ffmpeg" in fake_stderr.getvalue()
+
+    def test_non_darwin_falls_back_to_stderr(self, monkeypatch):
+        import io
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "_check_dependencies",
+                            lambda: ["yt-dlp is not installed."])
+        monkeypatch.setattr(ui.sys, "platform", "linux")
+
+        class _FakeStderr(io.StringIO):
+            def isatty(self):
+                return False
+
+        monkeypatch.setattr(ui.sys, "stderr", _FakeStderr())
+
+        def boom(_t, _m):
+            raise AssertionError("dialog should not be shown off macOS")
+        monkeypatch.setattr(ui, "_show_macos_dialog", boom)
+
+        with pytest.raises(SystemExit):
+            ui._check_dependencies_gui()
+
+
+class TestShowMacosDialog:
+    def test_returns_false_off_darwin(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui.sys, "platform", "linux")
+        assert ui._show_macos_dialog("t", "m") is False
+
+    def test_calls_osascript_on_darwin(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui.sys, "platform", "darwin")
+        calls = []
+
+        class _FakeRun:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return _FakeRun()
+
+        monkeypatch.setattr(ui.subprocess, "run", fake_run)
+        assert ui._show_macos_dialog("Title", "Body") is True
+        assert calls and calls[0][0] == "osascript"
+        # Title and body must appear in the AppleScript payload.
+        joined = " ".join(calls[0][1:])
+        assert "Title" in joined
+        assert "Body" in joined
+
+    def test_escapes_quotes_and_backslashes(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui.sys, "platform", "darwin")
+        calls = []
+        monkeypatch.setattr(
+            ui.subprocess, "run",
+            lambda cmd, **kw: calls.append(cmd) or type("R", (), {"returncode": 0})(),
+        )
+        ui._show_macos_dialog('a"b\\c', 'x"y\\z')
+        script = calls[0][-1]
+        # AppleScript string literals: " → \", \ → \\.
+        assert 'a\\"b\\\\c' in script
+        assert 'x\\"y\\\\z' in script
+
+    def test_returns_false_when_osascript_missing(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui.sys, "platform", "darwin")
+        def raise_fnf(*_a, **_k):
+            raise FileNotFoundError("no osascript")
+        monkeypatch.setattr(ui.subprocess, "run", raise_fnf)
+        assert ui._show_macos_dialog("t", "m") is False
+
+    def test_returns_false_on_nonzero_returncode(self, monkeypatch):
+        # codex review-1 REQUIRED #2: osascript rejecting the AppleScript
+        # source (syntax error, unknown keyword) exits non-zero. Without this
+        # check, _check_dependencies_gui would silently exit before reaching
+        # the stderr fallthrough path.
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            ui.subprocess, "run",
+            lambda cmd, **kw: type("R", (), {"returncode": 1})(),
+        )
+        assert ui._show_macos_dialog("t", "m") is False
+
+    def test_timeout_returns_false(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui.sys, "platform", "darwin")
+        def raise_timeout(*_a, **_k):
+            raise ui.subprocess.TimeoutExpired(cmd="osascript", timeout=60)
+        monkeypatch.setattr(ui.subprocess, "run", raise_timeout)
+        assert ui._show_macos_dialog("t", "m") is False
