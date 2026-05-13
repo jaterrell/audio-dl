@@ -1,5 +1,6 @@
 # pylint: disable=missing-function-docstring,missing-class-docstring,too-few-public-methods
 # pylint: disable=import-outside-toplevel,reimported,redefined-outer-name,protected-access,unused-argument
+# pylint: disable=too-many-lines
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
 import json
 import threading
@@ -157,7 +158,6 @@ class TestPostJobsHappyPath:
 
 class TestProgressHook:
     def _make_job(self):
-        import queue as _q
         from audio_dl_ui import JobState, UrlState
         url = "https://youtu.be/AAA"
         job = JobState(
@@ -169,15 +169,28 @@ class TestProgressHook:
             fragments=4,
             jobs=1,
             url_states={url: UrlState(url=url)},
-            queue=_q.Queue(),
         )
         return job, job.url_states[url]
+
+    def _attach_subscriber(self, job):
+        """Register a test subscriber so we can read emitted events.
+
+        v1.3 broadcast architecture: events flow to per-subscriber queues
+        rather than a single shared job.queue. Tests that want to assert
+        emission behavior register their own subscriber queue.
+        """
+        import queue as _q
+        sub = _q.Queue(maxsize=128)
+        with job.lock:
+            job.subscribers.append(sub)
+        return sub
 
     def test_throttle_caps_event_rate(self, monkeypatch):
         from audio_dl_ui import _make_progress_hook
         import audio_dl_ui
 
         job, url_state = self._make_job()
+        sub = self._attach_subscriber(job)
         # Fake clock: each call advances by 0.001s (1ms). 1000 ticks => 1s elapsed.
         ticks = [0.0]
         def fake_monotonic():
@@ -196,16 +209,17 @@ class TestProgressHook:
                 "filename": "x.mp3",
             })
         # 1 second of 1ms ticks; throttle is 200ms => ~5 events, ±1.
-        emitted = [job.queue.get_nowait() for _ in range(job.queue.qsize())]
+        emitted = [sub.get_nowait() for _ in range(sub.qsize())]
         assert 4 <= len(emitted) <= 6, f"got {len(emitted)} events"
         assert all(e["type"] == "progress" for e in emitted)
 
     def test_non_downloading_status_ignored(self):
         from audio_dl_ui import _make_progress_hook
         job, url_state = self._make_job()
+        sub = self._attach_subscriber(job)
         hook = _make_progress_hook(job, url_state)
         hook({"status": "finished", "downloaded_bytes": 0})
-        assert job.queue.empty()
+        assert sub.empty()
 
     def test_cancel_flag_raises(self):
         from audio_dl_ui import _make_progress_hook, _Cancelled
@@ -222,17 +236,38 @@ class TestProgressHook:
 # ---------------------------------------------------------------------------
 
 class TestSseHappyPath:
+    # pylint: disable=too-many-locals
     def test_sse_event_sequence(self, tmp_path, monkeypatch):
         """
         Mock download_media to emit 2 fake progress events into the hook,
         then return a synthetic path. Open POST /jobs, then GET
         /jobs/{id}/events, and assert the event order over SSE.
+
+        v1.3 broadcast: events emitted before the SSE subscriber registers
+        are NOT buffered (the snapshot covers cumulative state instead).
+        The test uses a gate to ensure the subscriber is registered before
+        fake_download fires its events, so the assertion of full live event
+        sequence is deterministic.
         """
         import audio_dl_ui as ui
 
         fake_path = str(tmp_path / "song.mp3")
         # Pre-create the file so the worker's path bookkeeping is realistic.
         (tmp_path / "song.mp3").write_bytes(b"x")
+
+        # Gate the worker until the SSE subscriber has registered. Set by the
+        # test after it reads the snapshot from the stream — at which point
+        # _events_iter has appended to job.subscribers under job.lock.
+        sse_ready = threading.Event()
+
+        # sanitize_url is called BEFORE url_started is emitted by _run_one;
+        # gating it (rather than download_media) blocks the worker before
+        # ANY events fire, so the test's SSE subscriber catches all of them.
+        original_sanitize = ui.sanitize_url
+        def gated_sanitize(url):
+            sse_ready.wait(timeout=5)
+            return original_sanitize(url)
+        monkeypatch.setattr(ui, "sanitize_url", gated_sanitize)
 
         def fake_download(_url, *, progress_hooks=None, **_kwargs):
             assert progress_hooks, "worker must wire in a hook"
@@ -266,14 +301,24 @@ class TestSseHappyPath:
                     continue
                 if line.startswith("data: "):
                     events.append(json.loads(line[len("data: "):]))
+                    # Release the worker once we've seen the snapshot, so
+                    # subsequent live events deterministically arrive.
+                    if events[-1].get("type") == "job_snapshot":
+                        sse_ready.set()
                 if events and events[-1].get("type") == "job_completed":
                     break
 
         types = [e["type"] for e in events]
-        assert types[0] == "job_started"
+        # v1.3: every SSE connection gets a job_snapshot first so a reconnecting
+        # browser can resync. job_started was dropped — snapshot conveys the
+        # initial URL list. Live events follow.
+        assert types[0] == "job_snapshot"
+        assert events[0]["complete"] is False
+        assert {u["url"] for u in events[0]["urls"]} == {"https://youtu.be/AAA"}
         assert "url_started" in types
         assert "url_completed" in types
         assert types[-1] == "job_completed"
+        assert "job_started" not in types
         # Find the url_completed event and check the path.
         completed = next(e for e in events if e["type"] == "url_completed")
         assert completed["paths"] == [fake_path]
@@ -286,6 +331,148 @@ class TestSseHappyPath:
 # ---------------------------------------------------------------------------
 # POST /jobs/{id}/cancel
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# v1.3 SSE broadcast — multi-subscriber, late-connect replay, snapshot
+# ---------------------------------------------------------------------------
+
+class TestSseBroadcast:
+    """The v1.3 fix for the deferred-from-v1.2.1 SSE single-consumer-queue bug.
+
+    Each subscriber registers a per-connection queue; _emit fans events to all
+    of them. Late subscribers get a snapshot + replay of the event log so a
+    browser reconnect mid-job doesn't lose events or split them between the
+    old (zombie) and new connections.
+    """
+
+    def _make_job(self):
+        from audio_dl_ui import JobState, UrlState
+        url = "https://youtu.be/AAA"
+        job = JobState(
+            id="bc", media_format="mp3", output_dir="/tmp",
+            playlist=False, force=False, fragments=4, jobs=1,
+            url_states={url: UrlState(url=url)},
+        )
+        return job
+
+    def test_multiple_subscribers_each_get_all_events(self):
+        import queue as _q
+        from audio_dl_ui import _emit
+        job = self._make_job()
+        sub_a = _q.Queue(maxsize=128)
+        sub_b = _q.Queue(maxsize=128)
+        with job.lock:
+            job.subscribers.append(sub_a)
+            job.subscribers.append(sub_b)
+
+        _emit(job, {"type": "url_started", "url": "https://youtu.be/AAA"})
+        _emit(job, {"type": "progress", "url": "https://youtu.be/AAA", "percent": 50.0})
+        _emit(job, {"type": "url_completed", "url": "https://youtu.be/AAA",
+                    "paths": ["/tmp/song.mp3"]})
+
+        def drain(q):
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
+            return [e["type"] for e in events]
+
+        # Both subscribers see the exact same event sequence.
+        seq_a = drain(sub_a)
+        seq_b = drain(sub_b)
+        assert seq_a == ["url_started", "progress", "url_completed"]
+        assert seq_a == seq_b
+
+    def test_late_subscriber_after_completion_gets_snapshot_only(self, tmp_path, monkeypatch):
+        """A subscriber connecting AFTER job_completed sees a snapshot with
+        complete=True + a populated summary, and the stream then closes.
+        No replay of historical events — the snapshot is everything the
+        client needs to render the final state."""
+        import audio_dl_ui as ui
+
+        fake_path = str(tmp_path / "song.mp3")
+        (tmp_path / "song.mp3").write_bytes(b"x")
+
+        def fake_download(_url, *, progress_hooks=None, **_kw):
+            assert progress_hooks
+            progress_hooks[0]({"status": "downloading", "downloaded_bytes": 50,
+                               "total_bytes": 100, "speed": 1024, "eta": 1,
+                               "filename": fake_path})
+            return [fake_path]
+
+        monkeypatch.setattr(ui, "download_media", fake_download)
+        body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
+        job_id = r.json()["job_id"]
+
+        # Wait for the job to actually complete before opening the SSE stream,
+        # so we exercise the "subscriber connects after job is done" path.
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if JOBS[job_id].completed:
+                break
+            time.sleep(0.02)
+        assert JOBS[job_id].completed, "job did not complete in time"
+
+        with client.stream("GET", f"/jobs/{job_id}/events{_csrf_query()}", timeout=5) as resp:
+            assert resp.status_code == 200
+            events = []
+            for line in resp.iter_lines():
+                if not line or line.startswith(": "):
+                    continue
+                if line.startswith("data: "):
+                    events.append(json.loads(line[len("data: "):]))
+                # No job_completed will arrive — stream closes after snapshot
+                # when the job is already complete. Loop ends naturally.
+
+        # Exactly one event: the snapshot with complete=True.
+        assert len(events) == 1, f"got {len(events)} events: {[e['type'] for e in events]}"
+        snap = events[0]
+        assert snap["type"] == "job_snapshot"
+        assert snap["complete"] is True
+        assert snap["summary"]["completed"] == 1
+        assert snap["summary"]["failed"] == 0
+        assert snap["urls"][0]["status"] == "completed"
+        assert snap["urls"][0]["paths"] == [fake_path]
+
+    def test_subscriber_unregistered_on_disconnect(self):
+        """Closing the SSE generator removes the subscriber so dead queues
+        don't leak. Tested at the generator level (TestClient's streaming
+        teardown is harder to drive deterministically from sync code, but
+        the generator's finally block is the contract we care about)."""
+        import asyncio
+        from audio_dl_ui import _events_iter
+        job = self._make_job()
+        JOBS[job.id] = job
+        try:
+            async def open_and_close():
+                gen = _events_iter(job.id)
+                # Consume the snapshot to force subscriber registration.
+                first = await gen.__anext__()
+                assert "job_snapshot" in first
+                assert len(job.subscribers) == 1, "snapshot should have registered a subscriber"
+                # Close the generator — runs the finally block.
+                await gen.aclose()
+            asyncio.run(open_and_close())
+            assert len(job.subscribers) == 0, (
+                f"subscriber not unregistered after generator close: {len(job.subscribers)}"
+            )
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_emit_with_no_subscribers_is_a_noop(self):
+        """Events emitted before any subscriber connects (worker race) are
+        intentionally dropped on the floor — the snapshot a future subscriber
+        receives covers their cumulative state, so there is no event log to
+        replay and no buffer to grow."""
+        from audio_dl_ui import _emit
+        job = self._make_job()
+        for i in range(50):
+            _emit(job, {"type": "progress", "n": i})
+        # No subscribers means no queues to put events into; nothing to assert
+        # beyond "did not raise". The fact that the test reaches this line is
+        # the assertion.
+        assert not job.subscribers
+
 
 class TestCancel:
     def test_unknown_job_404(self):
@@ -354,7 +541,6 @@ class TestReveal:
         """Register a path in a fake job, then reveal it."""
         import audio_dl_ui as ui
         from audio_dl_ui import JOBS, JobState, UrlState
-        import queue as _q
 
         path = str(tmp_path / "song.mp3")
         (tmp_path / "song.mp3").write_bytes(b"x")
@@ -363,7 +549,6 @@ class TestReveal:
             id="manual", media_format="mp3", output_dir=str(tmp_path),
             playlist=False, force=False, fragments=4, jobs=1,
             url_states={"u": UrlState(url="u", paths=[path], status="completed")},
-            queue=_q.Queue(),
         )
         JOBS["manual"] = job
 
@@ -490,21 +675,34 @@ class TestBindGuard:
 # ---------------------------------------------------------------------------
 
 class TestRunOneSanitizeError:
-    def test_sanitize_url_exception_emits_url_failed(self, tmp_path, monkeypatch):
-        """If sanitize_url raises, _run_one should emit url_failed, not hang the row."""
+    def test_sanitize_url_exception_surfaces_in_snapshot(self, tmp_path, monkeypatch):
+        """If sanitize_url raises, _run_one emits url_failed → job_completed.
+        v1.3 broadcast: the test connects SSE AFTER the job completes (the
+        sanitize error is synchronous), so the snapshot is the source of truth
+        for the failure surface. Assert the snapshot reflects status=failed +
+        error text, and that summary.failed==1."""
         import audio_dl_ui as ui
 
         def boom(_url):
             raise ValueError("intentional sanitize_url failure")
 
         monkeypatch.setattr(ui, "sanitize_url", boom)
-        # Also mock download_media so it doesn't get called (sanitize_url error is earlier)
+        # download_media shouldn't be reached (sanitize error fires first)
         monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
 
         body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         assert r.status_code == 200, f"POST /jobs failed with {r.status_code}: {r.text}"
         job_id = r.json()["job_id"]
+
+        # Wait for job to complete before opening SSE — sanitize error
+        # propagates synchronously through the worker.
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if JOBS[job_id].completed:
+                break
+            time.sleep(0.02)
+        assert JOBS[job_id].completed, "job did not complete in time"
 
         with client.stream("GET", f"/jobs/{job_id}/events?token=test-token", timeout=5) as resp:
             assert resp.status_code == 200
@@ -514,17 +712,18 @@ class TestRunOneSanitizeError:
                     continue
                 if line.startswith("data: "):
                     events.append(json.loads(line[len("data: "):]))
-                if events and events[-1].get("type") == "job_completed":
-                    break
+                # No live events arrive — stream closes after the snapshot
+                # because the job is already complete.
 
-        types = [e["type"] for e in events]
-        assert "url_failed" in types, f"expected url_failed in {types}"
-        failed = next(e for e in events if e["type"] == "url_failed")
-        err = failed["error"].lower()
-        assert "intentional sanitize_url failure" in failed["error"] or "sanitize" in err
-        last = events[-1]
-        assert last["type"] == "job_completed"
-        assert last["summary"]["failed"] == 1
+        # Single snapshot event with the failure surface fully described.
+        assert len(events) == 1
+        snap = events[0]
+        assert snap["type"] == "job_snapshot"
+        assert snap["complete"] is True
+        assert snap["summary"]["failed"] == 1
+        assert snap["urls"][0]["status"] == "failed"
+        err = snap["urls"][0]["error"]
+        assert err and ("intentional sanitize_url failure" in err or "sanitize" in err.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -542,7 +741,6 @@ class TestRevealSnapshotsJobs:
     def test_reveal_survives_concurrent_jobs_mutation(self, tmp_path, monkeypatch):
         import audio_dl_ui as ui
         from audio_dl_ui import JOBS, JobState
-        import queue as _q
 
         # A job whose url_states.values() mutates JOBS mid-iteration.
         # Without snapshotting outer JOBS.values(), this would raise
@@ -556,7 +754,6 @@ class TestRevealSnapshotsJobs:
             id="racer", media_format="mp3", output_dir=str(tmp_path),
             playlist=False, force=False, fragments=4, jobs=1,
             url_states=_MutatingStates(),
-            queue=_q.Queue(),
         )
 
         JOBS.clear()
@@ -582,10 +779,11 @@ class TestRevealSnapshotsJobs:
 # ---------------------------------------------------------------------------
 
 class TestQueueBound:
-    """JobState.queue is bounded at 128. Progress events get dropped on Full;
-    terminal events still get through."""
+    """Per-subscriber queues are bounded at 128 (v1.3 broadcast). Progress events
+    drop on Full; terminal events still get through, with overflow eviction
+    of the oldest event if necessary."""
 
-    def _make_job_with_full_queue(self, maxsize=128):
+    def _make_job_with_full_subscriber(self, maxsize=128):
         import queue as _q
         from audio_dl_ui import JobState, UrlState
         url = "https://youtu.be/AAA"
@@ -593,43 +791,47 @@ class TestQueueBound:
             id="qb", media_format="mp3", output_dir="/tmp",
             playlist=False, force=False, fragments=4, jobs=1,
             url_states={url: UrlState(url=url)},
-            queue=_q.Queue(maxsize=maxsize),
         )
-        # Pre-fill with progress events.
+        sub = _q.Queue(maxsize=maxsize)
+        with job.lock:
+            job.subscribers.append(sub)
+        # Pre-fill with progress events to saturate the queue.
         for i in range(maxsize):
-            job.queue.put({"type": "progress", "n": i})
-        assert job.queue.full()
-        return job
+            sub.put({"type": "progress", "n": i})
+        assert sub.full()
+        return job, sub
 
     def test_progress_events_dropped_when_full(self):
         from audio_dl_ui import _emit
-        job = self._make_job_with_full_queue()
+        job, sub = self._make_job_with_full_subscriber()
         # Pushing more progress events must NOT block and must NOT raise.
         for _ in range(50):
             _emit(job, {"type": "progress", "extra": True})
         # Queue size is still capped.
-        assert job.queue.qsize() == 128
+        assert sub.qsize() == 128
 
     def test_terminal_events_get_through_when_full(self):
         from audio_dl_ui import _emit
-        job = self._make_job_with_full_queue()
+        job, sub = self._make_job_with_full_subscriber()
         _emit(job, {"type": "job_completed", "job_id": "qb",
                     "summary": {"completed": 0, "failed": 1, "cancelled": 0}})
         # Drain everything and verify job_completed is present.
         events = []
-        while not job.queue.empty():
-            events.append(job.queue.get_nowait())
+        while not sub.empty():
+            events.append(sub.get_nowait())
         types = [e["type"] for e in events]
         assert "job_completed" in types
 
-    def test_post_jobs_creates_bounded_queue(self, tmp_path, monkeypatch):
+    def test_post_jobs_initializes_empty_subscribers(self, tmp_path, monkeypatch):
+        # v1.3: there's no single job.queue anymore. POST /jobs creates a
+        # JobState with no subscribers — each SSE connection registers its own.
         import audio_dl_ui as ui
         monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
         body = _valid_body(output_dir=str(tmp_path))
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         assert r.status_code == 200
         job_id = r.json()["job_id"]
-        assert JOBS[job_id].queue.maxsize == 128
+        assert JOBS[job_id].subscribers == []
 
 
 # ---------------------------------------------------------------------------

@@ -43,9 +43,20 @@
   Homebrew ffmpeg keep that behavior (PATH fallback); bundle users get the
   embedded binary automatically.
 
-### Known issues (still deferred)
-- SSE single-consumer queue (carried over from v1.2.1) — browser reconnects
-  may split events between connections.
+### Fixed
+- **SSE single-consumer queue (carried over from v1.2.1).** Replaced
+  ``JobState.queue`` with a per-subscriber broadcast architecture. Each
+  SSE connection registers its own ``queue.Queue`` and ``_emit`` fans
+  events out to all of them, so a browser reconnect mid-job no longer
+  races and splits events between the zombie and the new connection. New
+  subscribers receive a ``job_snapshot`` event (cumulative state: URL list,
+  per-URL status/percent/paths, ``complete`` flag, summary) — the UI is
+  state-driven, so the snapshot is everything a fresh subscriber needs to
+  render correctly. Events emitted before a subscriber connects are
+  intentionally dropped (the worker thread can race ahead of the
+  EventSource open); the snapshot covers their cumulative effect. The
+  ``job_started`` event was removed — the snapshot conveys the initial
+  URL list.
 
 ## v1.2.1 — 2026-05-11
 

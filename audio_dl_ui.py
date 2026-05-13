@@ -77,7 +77,22 @@ class UrlState:  # pylint: disable=too-many-instance-attributes
 
 @dataclass
 class JobState:  # pylint: disable=too-many-instance-attributes
-    """Holds the entire state of a batch download job, including all URL states."""
+    """Holds the entire state of a batch download job, including all URL states.
+
+    Broadcast architecture (v1.3): every SSE subscriber registers its own
+    ``queue.Queue`` and ``_emit`` fans events out to all of them, so a
+    reconnect-during-job no longer races and splits events between connections.
+
+    New subscribers receive a single ``job_snapshot`` event (cumulative
+    state) on connect — they don't replay historical events. The UI is
+    state-driven, not event-replay-driven; the snapshot captures everything
+    a fresh subscriber needs to render the current state without ambiguity
+    about which past events to apply.
+
+    ``lock`` protects ``subscribers``; ``_emit`` snapshots the subscriber
+    list under the lock before fanning out, so registration and broadcast
+    can't race.
+    """
 
     id: str
     media_format: str
@@ -87,8 +102,10 @@ class JobState:  # pylint: disable=too-many-instance-attributes
     fragments: int
     jobs: int
     url_states: dict[str, UrlState]
-    queue: "queue.Queue[dict]"
+    subscribers: list["queue.Queue[dict]"] = field(default_factory=list)
+    lock: threading.Lock = field(default_factory=threading.Lock)
     cancelled: bool = False
+    completed: bool = False
     executor: ThreadPoolExecutor | None = None
 
 
@@ -101,43 +118,55 @@ JOBS: dict[str, JobState] = {}
 
 # Terminal events must always be delivered even if the queue is full;
 # progress events can be dropped (they're throttled to ~5/sec/URL upstream
-# and a missed sample is harmless).
+# and a missed sample is harmless). ``job_snapshot`` is delivered out-of-band
+# (yielded directly by _events_iter before draining the queue) so it doesn't
+# appear here.
 _TERMINAL_EVENT_TYPES = frozenset({
-    "job_started", "url_started", "url_completed", "url_failed", "job_completed",
+    "url_started", "url_completed", "url_failed", "job_completed",
 })
 
 
-def _emit(job: JobState, event: dict) -> None:
-    """Push an SSE event onto the job's queue.
+def _put_with_overflow(q: "queue.Queue[dict]", event: dict) -> None:
+    """Push one event onto one subscriber's queue with overflow handling.
 
-    Terminal events (job/url lifecycle) use a bounded put with a short
-    timeout — if the queue is somehow full of progress events, give them a
-    chance to be drained before silently dropping the terminal.
-    Progress events use put_nowait and drop on Full.
+    Terminal events take a small block-with-timeout so a momentarily-full
+    queue still gets the lifecycle signal. If the timeout expires, drop the
+    oldest event to make room — silently losing a terminal event would hang
+    the client UI. Progress events use put_nowait and drop on Full.
     """
     if event.get("type") in _TERMINAL_EVENT_TYPES:
         try:
-            job.queue.put(event, timeout=1.0)
+            q.put(event, timeout=1.0)
+            return
         except queue.Full:
-            # Last-resort: force-drop the oldest queued event to make room.
-            # The alternative is silently losing this terminal event, which
-            # is worse (UI hangs). Note: if the queue is somehow full of
-            # other terminals (only possible with many URLs + a disconnected
-            # client), this drops one of them — accepted tradeoff until the
-            # v1.3 per-subscriber broadcast rewrite.
             try:
-                job.queue.get_nowait()
+                q.get_nowait()
             except queue.Empty:
                 pass
             try:
-                job.queue.put_nowait(event)
+                q.put_nowait(event)
             except queue.Full:
-                pass  # truly stuck; the worst-case outcome
+                pass  # truly stuck; worst-case outcome
     else:
         try:
-            job.queue.put_nowait(event)
+            q.put_nowait(event)
         except queue.Full:
             pass  # drop excess progress
+
+
+def _emit(job: JobState, event: dict) -> None:
+    """Broadcast an SSE event to every subscriber currently connected.
+
+    Snapshots the subscriber list under the lock so register/unregister can't
+    mutate it mid-iteration. The actual ``put`` happens without the lock so
+    a slow consumer doesn't block emitters.
+    """
+    if event.get("type") == "job_completed":
+        job.completed = True
+    with job.lock:
+        subs = list(job.subscribers)
+    for q in subs:
+        _put_with_overflow(q, event)
 
 
 def _require_csrf(request: Request) -> str:
@@ -289,15 +318,15 @@ def _supervise(job: JobState, futures: list) -> None:
 
 
 def _start_job(job: JobState) -> None:
-    """Spin up the executor and supervisor. Called from POST /jobs."""
+    """Spin up the executor and supervisor. Called from POST /jobs.
+
+    v1.3: there is no ``job_started`` event anymore. The initial state of all
+    URLs is conveyed via the ``job_snapshot`` event that every SSE subscriber
+    receives on connect. This sidesteps the race where a subscriber connects
+    after ``_start_job`` and would otherwise miss the original ``job_started``
+    in a pure-broadcast model.
+    """
     job.executor = ThreadPoolExecutor(max_workers=job.jobs)
-    # Emit job_started BEFORE submitting futures to guarantee it is first in
-    # the queue, regardless of how quickly the worker threads start running.
-    _emit(job, {
-        "type": "job_started",
-        "job_id": job.id,
-        "urls": [{"url": s.url} for s in job.url_states.values()],
-    })
     futures = [
         job.executor.submit(_run_one, job, url)
         for url in job.url_states
@@ -483,8 +512,33 @@ _INDEX_HTML = """<!doctype html>
   }
 
   function handleEvent(ev) {
-    if (ev.type === 'job_started') {
-      ev.urls.forEach(u => rowFor(u.url));
+    if (ev.type === 'job_snapshot') {
+      // Rebuild UI from server state. Sent as the first event on every SSE
+      // connection (v1.3 broadcast architecture) so a refresh / reconnect /
+      // late join can resync without having received the original events.
+      ev.urls.forEach(u => {
+        const row = rowFor(u.url);
+        setBar(row, u.percent);
+        if (u.status === 'downloading') {
+          const bits = [u.percent.toFixed(1) + '%'];
+          if (u.speed) bits.push(fmtSpeed(u.speed));
+          if (u.eta != null) bits.push(fmtEta(u.eta));
+          setStatus(row, bits.join(' · '));
+        } else if (u.status === 'completed') {
+          setBar(row, 100);
+          setStatus(row, 'completed', 'completed');
+          if (u.paths && u.paths.length) addRevealButton(row, u.paths);
+        } else if (u.status === 'failed') {
+          setStatus(row, u.error || 'failed', 'failed');
+        } else if (u.status === 'cancelled') {
+          setStatus(row, 'cancelled', 'cancelled');
+        } // 'pending' → leave the empty row in place
+      });
+      if (ev.complete) {
+        // Job already terminal when we connected; flip UI to done state.
+        $('submit').disabled = false;
+        $('cancel').disabled = true;
+      }
     } else if (ev.type === 'url_started') {
       const row = rowFor(ev.url);
       setStatus(row, 'downloading…');
@@ -642,33 +696,108 @@ async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dic
         fragments=req.fragments,
         jobs=req.jobs,
         url_states={u: UrlState(url=u) for u in urls},
-        queue=queue.Queue(maxsize=128),
     )
     JOBS[job_id] = job
     _start_job(job)
     return {"job_id": job_id}
 
 
+def _build_snapshot(job: JobState) -> dict:
+    """Build a ``job_snapshot`` event describing the job's current state.
+
+    Sent as the first event to every new SSE subscriber so a reconnecting or
+    late-joining browser can rebuild its UI without having received the
+    original ``job_started``/``progress``/``url_completed`` sequence. Includes
+    a ``complete`` flag so a subscriber that connects after ``job_completed``
+    can still flip its UI to the terminal state.
+    """
+    summary: dict | None = None
+    if job.completed:
+        summary = {
+            "completed": sum(1 for s in job.url_states.values() if s.status == "completed"),
+            "failed": sum(
+                1 for s in job.url_states.values()
+                if s.status in ("failed", "cancelled")
+            ),
+        }
+    return {
+        "type": "job_snapshot",
+        "job_id": job.id,
+        "complete": job.completed,
+        "summary": summary,
+        "urls": [
+            {
+                "url": s.url,
+                "status": s.status,
+                "percent": s.percent,
+                "downloaded_bytes": s.downloaded_bytes,
+                "total_bytes": s.total_bytes,
+                "speed": s.speed,
+                "eta": s.eta,
+                "filename": s.filename,
+                "paths": list(s.paths),
+                "error": s.error,
+            }
+            for s in job.url_states.values()
+        ],
+    }
+
+
 async def _events_iter(job_id: str):
-    """SSE generator: drain a job's queue and yield framed events."""
+    """SSE generator: register as a subscriber, yield snapshot, live-stream.
+
+    Sequence:
+
+    1. Register a per-connection ``queue.Queue`` in ``job.subscribers``
+       under ``job.lock``.
+    2. Yield a single ``job_snapshot`` event capturing cumulative state
+       (URL list, per-URL status/percent, completion flag, summary). The
+       UI is state-driven; the snapshot is everything a fresh subscriber
+       needs to render correctly without trying to apply a historical
+       event sequence (and without the duplicate-event semantics that a
+       snapshot+replay design would create).
+    3. If the job was already complete when the subscriber connected, the
+       snapshot conveys that (``complete=True``, ``summary`` populated)
+       and the generator returns immediately — no point keeping the
+       connection open.
+    4. Otherwise, live-stream events from the per-connection queue until
+       ``job_completed`` or the client disconnects.
+
+    The ``finally`` block removes this subscriber on generator close so
+    dead subscribers don't leak (uvicorn cancels the task on client
+    disconnect).
+    """
     job = JOBS.get(job_id)
     if job is None:
-        # Should not happen because get_events checks first, but be defensive.
+        # get_events checks first, but be defensive.
         return
-    last_keepalive = time.monotonic()
-    while True:
-        try:
-            event = await asyncio.to_thread(job.queue.get, True, 1.0)
-        except queue.Empty:
-            now = time.monotonic()
-            if now - last_keepalive >= 30:
-                yield ": keepalive\n\n"
-                last_keepalive = now
-            continue
-        yield f"data: {json.dumps(event)}\n\n"
-        last_keepalive = time.monotonic()
-        if event.get("type") == "job_completed":
+    sub_queue: "queue.Queue[dict]" = queue.Queue(maxsize=128)
+    with job.lock:
+        job.subscribers.append(sub_queue)
+    try:
+        yield f"data: {json.dumps(_build_snapshot(job))}\n\n"
+        if job.completed:
             return
+        last_keepalive = time.monotonic()
+        while True:
+            try:
+                event = await asyncio.to_thread(sub_queue.get, True, 1.0)
+            except queue.Empty:
+                now = time.monotonic()
+                if now - last_keepalive >= 30:
+                    yield ": keepalive\n\n"
+                    last_keepalive = now
+                continue
+            yield f"data: {json.dumps(event)}\n\n"
+            last_keepalive = time.monotonic()
+            if event.get("type") == "job_completed":
+                return
+    finally:
+        with job.lock:
+            try:
+                job.subscribers.remove(sub_queue)
+            except ValueError:
+                pass  # already removed; no-op
 
 
 @app.get("/jobs/{job_id}/events")
