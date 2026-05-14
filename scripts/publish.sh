@@ -34,7 +34,7 @@ git filter-repo --invert-paths "${filter_args[@]}" --force --quiet
 
 echo
 echo "→ Filtered history (head):"
-git log --oneline | head -10
+git log --oneline -10
 echo "→ Tags after filter:"
 git tag --list | sort -V
 echo
