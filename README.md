@@ -95,6 +95,19 @@ open dist/audio-dl.app
 - **macOS only** for now. PyInstaller can target Windows/Linux too, but
   the build script and `Info.plist` are macOS-specific.
 
+### Installing a release build
+
+If you don't want to build the bundle yourself, download a prebuilt
+release from the [Releases page](https://github.com/jaterrell/audio-dl/releases).
+Each release ships an Apple Silicon (`arm64`) zip with the `.app` and a
+first-launch instructions file inside.
+
+Full step-by-step including the Gatekeeper workaround is in
+[INSTALL.md](INSTALL.md).
+
+Intel Mac users: build from source via the instructions above. There is
+no x86_64 prebuilt bundle yet.
+
 The bundle ships a statically-linked LGPL `ffmpeg` from
 [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg). The companion
 `ffprobe` binary is **not** bundled — common yt-dlp audio/video flows

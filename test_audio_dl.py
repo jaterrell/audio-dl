@@ -2,6 +2,11 @@
 # pylint: disable=import-outside-toplevel,protected-access
 """Tests for audio_dl.py — sanitize_url, detect_platform, _build_ydl_opts,
 _check_dependencies."""
+import os
+import pathlib
+import shutil
+import subprocess
+
 import pytest
 
 from audio_dl import (
@@ -656,8 +661,9 @@ class TestAppEntry:
             sys.argv = original_argv
         assert callable(getattr(mod, "_main", None))
 
-    def test_strips_argv_before_delegating(self, monkeypatch):
-        """_main() must clear Finder-injected argv before calling audio_dl_ui.main."""
+    def test_strips_psn_argv_preserves_other_flags(self, monkeypatch):
+        """_main() drops Finder-injected -psn_* argv but preserves real flags
+        like --no-browser so the CI smoke test can boot the bundle headless."""
         import sys
         import importlib
         mod = importlib.import_module("_app_entry")
@@ -667,7 +673,24 @@ class TestAppEntry:
             captured["argv"] = list(sys.argv)
 
         monkeypatch.setattr("audio_dl_ui.main", fake_main)
-        monkeypatch.setattr(sys, "argv", ["audio-dl", "-psn_0_12345", "garbage"])
+        monkeypatch.setattr(
+            sys, "argv", ["audio-dl", "-psn_0_12345", "--no-browser"]
+        )
+        mod._main()
+        assert captured["argv"] == ["audio-dl", "--no-browser"]
+
+    def test_strips_psn_argv_when_no_other_flags(self, monkeypatch):
+        """A Finder launch with only -psn_* args leaves just argv[0]."""
+        import sys
+        import importlib
+        mod = importlib.import_module("_app_entry")
+        captured: dict[str, list[str]] = {}
+
+        def fake_main():
+            captured["argv"] = list(sys.argv)
+
+        monkeypatch.setattr("audio_dl_ui.main", fake_main)
+        monkeypatch.setattr(sys, "argv", ["audio-dl", "-psn_0_98765"])
         mod._main()
         assert captured["argv"] == ["audio-dl"]
 
@@ -734,7 +757,6 @@ class TestAppEntryHomebrewPathBootstrap:
 class TestPyInstallerSpec:
     def test_spec_file_is_valid_python(self):
         """audio-dl.spec must compile — PyInstaller globals are injected at run time."""
-        import pathlib
         import py_compile
         import tempfile
         spec = pathlib.Path(__file__).parent / "audio-dl.spec"
@@ -745,7 +767,6 @@ class TestPyInstallerSpec:
 
     def test_spec_references_version_source(self):
         """Spec must read __version__ from audio_dl.py — single source of truth."""
-        import pathlib
         spec_text = (pathlib.Path(__file__).parent / "audio-dl.spec").read_text()
         # The regex-read mechanism keeps the bundle version in sync with the
         # CLI version without a third place to bump.
@@ -754,6 +775,142 @@ class TestPyInstallerSpec:
 
     def test_spec_targets_app_entry_shim(self):
         """Spec must analyse _app_entry.py, not audio_dl_ui.py directly."""
-        import pathlib
         spec_text = (pathlib.Path(__file__).parent / "audio-dl.spec").read_text()
         assert "_app_entry.py" in spec_text
+
+
+# ---------------------------------------------------------------------------
+# scripts/extract_changelog.py — CHANGELOG section extractor for release notes
+# ---------------------------------------------------------------------------
+
+_REPO_ROOT = pathlib.Path(__file__).parent
+_EXTRACT_SCRIPT = _REPO_ROOT / "scripts" / "extract_changelog.py"
+
+
+class TestExtractChangelog:
+    CHANGELOG_FIXTURE = """# Changelog
+
+## v1.4 — Automated macOS release pipeline (2026-05-14)
+
+Pipeline section body.
+
+Multiple lines of notes.
+
+## v1.3 — SSE per-subscriber broadcast (2026-05-13)
+
+Old SSE section body.
+
+## v1.2.1 — codex review-driven patch (2026-05-12)
+
+Older patch notes.
+
+## [1.0.0] - 2026-05-04
+
+Bracket-style old notes (Keep-A-Changelog convention).
+"""
+
+    def _run(self, tag: str, changelog_content: str, tmp_path):
+        (tmp_path / "CHANGELOG.md").write_text(changelog_content)
+        return subprocess.run(
+            ["python", str(_EXTRACT_SCRIPT), tag],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_exact_match_returns_section_body(self, tmp_path):
+        r = self._run("v1.4", self.CHANGELOG_FIXTURE, tmp_path)
+        assert r.returncode == 0, r.stderr
+        assert "Pipeline section body." in r.stdout
+        assert "Multiple lines of notes." in r.stdout
+        assert "Old SSE section body." not in r.stdout
+
+    def test_header_line_itself_is_stripped(self, tmp_path):
+        r = self._run("v1.4", self.CHANGELOG_FIXTURE, tmp_path)
+        assert r.returncode == 0
+        assert "## v1.4" not in r.stdout
+
+    def test_v_x_y_zero_falls_back_to_v_x_y(self, tmp_path):
+        r = self._run("v1.4.0", self.CHANGELOG_FIXTURE, tmp_path)
+        assert r.returncode == 0, r.stderr
+        assert "Pipeline section body." in r.stdout
+
+    def test_patch_version_exact_match(self, tmp_path):
+        r = self._run("v1.2.1", self.CHANGELOG_FIXTURE, tmp_path)
+        assert r.returncode == 0, r.stderr
+        assert "Older patch notes." in r.stdout
+        assert "Pipeline section body." not in r.stdout
+        assert "Old SSE section body." not in r.stdout
+
+    def test_section_terminates_at_bracket_style_header(self, tmp_path):
+        """The terminator must match ANY ## header, not only ## v...
+        — older releases in the CHANGELOG use Keep-A-Changelog's
+        ## [X.Y.Z] bracket style and the section must not slurp them."""
+        r = self._run("v1.2.1", self.CHANGELOG_FIXTURE, tmp_path)
+        assert r.returncode == 0, r.stderr
+        assert "Older patch notes." in r.stdout
+        assert "Bracket-style old notes" not in r.stdout
+
+    def test_no_match_exits_nonzero(self, tmp_path):
+        r = self._run("v9.9.9", self.CHANGELOG_FIXTURE, tmp_path)
+        assert r.returncode != 0
+        assert "v9.9.9" in r.stderr
+
+    def test_empty_changelog_exits_nonzero(self, tmp_path):
+        r = self._run("v1.0", "", tmp_path)
+        assert r.returncode != 0
+        assert "v1.0" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# scripts/package-release.sh — stage + zip + checksum the .app for release
+# ---------------------------------------------------------------------------
+
+_PACKAGE_SCRIPT = _REPO_ROOT / "scripts" / "package-release.sh"
+
+
+class TestPackageRelease:
+    def test_packages_app_with_readme_first_and_checksum(self, tmp_path):
+        """End-to-end: given a fake dist/audio-dl.app and the README-FIRST
+        template, the script stages, zips, and SHA256-sums the release."""
+        # Fake .app directory tree (just enough to be cp'd as a real .app).
+        app_dir = tmp_path / "dist" / "audio-dl.app"
+        (app_dir / "Contents").mkdir(parents=True)
+        (app_dir / "Contents" / "marker").write_text("fake app contents")
+
+        # Copy the actual README-FIRST template into the tmp tree.
+        templates_dir = tmp_path / "scripts" / "release-templates"
+        templates_dir.mkdir(parents=True)
+        shutil.copy(
+            _REPO_ROOT / "scripts" / "release-templates" / "README-FIRST.txt",
+            templates_dir / "README-FIRST.txt",
+        )
+
+        # Copy the actual package-release.sh script.
+        scripts_dir = tmp_path / "scripts"
+        target_script = scripts_dir / "package-release.sh"
+        shutil.copy(_PACKAGE_SCRIPT, target_script)
+        os.chmod(target_script, 0o755)
+
+        r = subprocess.run(
+            ["bash", str(target_script), "v1.4.0"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert r.returncode == 0, f"stderr: {r.stderr}\nstdout: {r.stdout}"
+
+        # Staged directory contains the app + README-FIRST.
+        stage = tmp_path / "dist" / "release" / "audio-dl-v1.4.0-macos-arm64"
+        assert (stage / "audio-dl.app" / "Contents" / "marker").exists()
+        assert (stage / "README-FIRST.txt").exists()
+
+        # Zip and checksum files exist with the expected names.
+        zip_path = tmp_path / "dist" / "release" / "audio-dl-v1.4.0-macos-arm64.zip"
+        assert zip_path.exists()
+        sha_path = tmp_path / "dist" / "release" / "SHA256SUMS"
+        assert sha_path.exists()
+        # SHA256SUMS references the zip by name.
+        assert "audio-dl-v1.4.0-macos-arm64.zip" in sha_path.read_text()

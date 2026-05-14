@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Build the macOS .app bundle for audio-dl.
 #
-# Phase 3b: ffmpeg now ships inside the bundle via imageio-ffmpeg, so the
-# .app no longer requires ``brew install ffmpeg`` to function. Bundle size
-# grew from ~47 MB → ~120 MB to accommodate the static ffmpeg binary.
+# Ships ffmpeg embedded via imageio-ffmpeg (Phase 3b, v1.3) so the .app
+# doesn't require `brew install ffmpeg`. Bundle size is ~95 MB.
 #
-# Still scoped to developers + trusted testers: the bundle is unsigned
-# (ad-hoc signed only to suppress macOS runtime warnings). Distribution-
-# grade Developer-ID signing + notarization remains a TODO block below.
+# Distribution is unsigned by design — see
+# docs/superpowers/specs/2026-05-13-release-pipeline.md. First-launch
+# Gatekeeper friction is handled by INSTALL.md and the bundled
+# README-FIRST.txt that ships inside every release zip.
 #
 # Prereqs (do once per dev machine):
-#   python -m pip install -e '.[ui]'
-#   python -m pip install pyinstaller imageio-ffmpeg
+#   python -m pip install -e '.[ui,app]'
+#   python -m pip install pyinstaller
 #
 # Usage:
 #   scripts/build-app.sh
@@ -53,15 +53,9 @@ python -m PyInstaller audio-dl.spec --noconfirm --clean
 # first launch via "right-click → Open" or ``xattr -d com.apple.quarantine``.
 codesign --force --deep --sign - dist/audio-dl.app
 
-# TODO (Phase 3b): real signing + notarization when Joe's Developer ID is set up:
-#   codesign --force --deep --options runtime \
-#            --sign "Developer ID Application: <Joe Terrell>" \
-#            --entitlements scripts/entitlements.plist \
-#            dist/audio-dl.app
-#   ditto -c -k --keepParent dist/audio-dl.app dist/audio-dl.zip
-#   xcrun notarytool submit dist/audio-dl.zip \
-#       --keychain-profile audio-dl-notary --wait
-#   xcrun stapler staple dist/audio-dl.app
+# Distribution is unsigned by design (trusted-tester scope) — Gatekeeper
+# on first launch is handled by INSTALL.md / README-FIRST.txt, not by
+# signing. See docs/superpowers/specs/2026-05-13-release-pipeline.md.
 
 cat <<MSG
 
