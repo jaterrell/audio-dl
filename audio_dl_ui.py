@@ -712,18 +712,56 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     --accent: #ebbcba; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
     --live: #c4a7e7;   --dim: #6e6a86;    --bar: #c4a7e7;    --btn-fg: #191724;
     --glow: 0 0 6px var(--accent);
+    /* structural: editorial / magazine identity */
+    --line-height: 1.75;
+    --pane-padding: 0.9em 1.4em;
+    --title-letterspacing: 0.04em;
+    --title-weight: 400;
+    --section-divider: ' \2014 ';
+  }
+  html[data-theme="rose"] .panel {
+    border-radius: 4px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+  }
+  html[data-theme="rose"] .frame .panel-title {
+    font-style: italic;
+    font-weight: 400;
   }
   :root[data-theme="moon"] {
     --bg: #232136;     --fg: #e0def4;     --frame: #44415a;  --label: #908caa;
     --accent: #ea9a97; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
     --live: #c4a7e7;   --dim: #6e6a86;    --bar: #c4a7e7;    --btn-fg: #232136;
-    --glow: 0 0 6px var(--accent);
+    --glow: 0 0 10px var(--accent);
+    /* structural: dramatic / performance identity */
+    --line-height: 1.7;
+    --pane-padding: 0.9em 1.4em;
+    --title-letterspacing: 0.02em;
+    --title-weight: 400;
+    --section-divider: ' / ';
+  }
+  html[data-theme="moon"] .panel {
+    border-left: 4px solid var(--accent);
+    padding-left: 1em;
   }
   :root[data-theme="dawn"] {
     --bg: #faf4ed;     --fg: #575279;     --frame: #cecacd;  --label: #797593;
     --accent: #d7827e; --ok: #56949f;     --err: #b4637a;    --warn: #ea9d34;
     --live: #907aa9;   --dim: #9893a5;    --bar: #907aa9;    --btn-fg: #faf4ed;
     --glow: none;
+    /* structural: paper / print identity */
+    --line-height: 1.85;
+    --frame-rule-width: 1px;
+    --frame-rule-color: var(--label);
+    --section-divider: ' \203B ';
+  }
+  html[data-theme="dawn"] #status-bar .sb-app {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-style: italic;
+    font-weight: 400;
+  }
+  html[data-theme="dawn"] button.tui-btn:hover {
+    filter: none;
+    text-decoration: underline;
   }
   :root[data-theme="amber"] {
     --bg: #0a0600;     --fg: #ffb000;     --frame: #4a3000;  --label: #8a5a00;
