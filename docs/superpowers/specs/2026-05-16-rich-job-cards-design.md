@@ -43,56 +43,63 @@ Cards stack vertically full-width; viewport scrolls when many. No grid layout �
 
 ### `UrlState` (extended)
 
-Existing fields (preserved): `url`, `status`, `percent`, `paths`.
+Existing fields (preserved as-is): `url`, `sanitized_url`, `status`, `percent`, `downloaded_bytes`, `total_bytes`, `speed`, `eta`, `filename`, `paths`, `error`, `last_progress_emit`. The live-progress numbers already flow today — the `progress` SSE event already carries `speed`, `eta`, `downloaded_bytes`, `total_bytes`, `filename` from the yt-dlp hook. **The UI just doesn't render them yet.** This design adds the rendering plus the genuinely-new bits below.
 
-New fields, all default to `None` until known:
+New fields, all default to `None`/empty until set:
 
 ```python
 # metadata — set once on first info-dict tick
-title: str | None
-uploader: str | None
-duration: int | None         # seconds
-thumbnail_ready: bool        # True once /jobs/{id}/thumb/{idx} will serve
+title: str | None = None
+uploader: str | None = None
+duration: int | None = None       # seconds
+thumbnail_ready: bool = False     # True once /jobs/{id}/thumb/{url_idx}.jpg will serve
 
-# live progress — updated every progress-hook tick
-phase: str | None            # "resolving" | "downloading" | "postprocessing" | "complete" | "failed"
-speed: float | None          # bytes/sec
-eta: int | None              # seconds
-downloaded_bytes: int | None
-total_bytes: int | None      # falls back to total_bytes_estimate
+# explicit lifecycle phase (distinct from `status`, the legacy coarse state)
+phase: str | None = None
+# "resolving" | "downloading" | "postprocessing" | "complete" | "failed"
 
 # log ring — bounded server-side
-log: collections.deque[dict] # maxlen=50; entries {ts: float, level: str, text: str}
+log: collections.deque[dict] = field(
+    default_factory=lambda: collections.deque(maxlen=50)
+)
+# each entry: {ts: float, level: str, text: str}
 ```
 
 `thumbnail_ready` is a boolean. The file lives at a known on-disk path served by the proxy endpoint; the URL never travels in the SSE payload.
 
+### `url_idx`
+
+A 0-based integer position of each URL in the job's submission order. Derived from the existing `UrlState` ordering in `JobState.url_states` (dict insertion order is preserved). Used only for thumbnail routing (`/jobs/{job_id}/thumb/{url_idx}.jpg` filesystem layout) — events on the wire continue to identify URLs by the raw `url` string for backwards compatibility with all existing event consumers.
+
 ## SSE protocol additions
 
-Three events. One is brand new (`url_log`), one is sticky-one-shot (`url_metadata`), one is an additive extension of an existing event (`url_progress`).
+Three changes. Two are brand new events (`url_metadata`, `url_log`); one extends the existing `progress` event with a single new field.
 
-### Extended `url_progress`
+### Extended `progress` (existing event)
 
 ```jsonc
-{ "type": "url_progress",
-  "url_idx": 1,
-  "percent": 30.0,            // existing
-  "phase": "downloading",     // new
-  "speed": 3250000,           // new — bytes/sec
-  "eta": 8,                   // new — seconds
-  "downloaded_bytes": 14700000,  // new
-  "total_bytes": 47000000 }   // new — uses total_bytes_estimate fallback
+{ "type": "progress",            // existing event name preserved
+  "job_id": "...",               // existing
+  "url": "https://...",          // existing — URL string, not url_idx
+  "percent": 30.0,               // existing
+  "downloaded_bytes": 14700000,  // existing
+  "total_bytes": 47000000,       // existing — already uses total_bytes_estimate fallback
+  "speed": 3250000,              // existing
+  "eta": 8,                      // existing
+  "filename": "...m4a",          // existing
+  "phase": "downloading" }       // NEW — only new field on this event
 ```
 
-Backwards-compatible: existing consumers ignore unknown fields.
+Backwards-compatible: existing consumers ignore unknown fields. The `progress` event already emits at most ~5/sec/URL via the existing 0.2s throttle in `_make_progress_hook`.
 
 ### New `url_metadata` — one-shot per URL
 
-Fired when yt-dlp's info dict is first available for a URL, and again with `thumbnail_ready: true` once the proxy has the thumb on disk (or once with `thumbnail_ready: false` if fetch fails).
+Fired when yt-dlp's info dict is first available for a URL, and again once the proxy has fetched the thumb (or once with `thumbnail_ready: false` if fetch fails).
 
 ```jsonc
 { "type": "url_metadata",
-  "url_idx": 1,
+  "job_id": "...",
+  "url": "https://...",       // URL string identifier, like every other event
   "title": "Wandered into the Day",
   "uploader": "Geotic",
   "duration": 251,
@@ -105,7 +112,8 @@ May fire **up to twice** per URL: once on metadata-known with `thumbnail_ready: 
 
 ```jsonc
 { "type": "url_log",
-  "url_idx": 1,
+  "job_id": "...",
+  "url": "https://...",
   "level": "info",            // "info" | "warning" | "error"
   "text": "[hls] downloading fragment 12/45",
   "ts": 1715855412.3 }
@@ -115,7 +123,7 @@ Only filter-passing lines reach this event (see "Logger capture + filtering" bel
 
 ### `job_snapshot` extension
 
-Late-connect subscribers must catch up. Per-URL snapshot entries gain all the sticky fields above plus `log` (full 50-line ring). Existing snapshot fields preserved.
+Per-URL snapshot entries in `_build_snapshot` gain `phase`, `title`, `uploader`, `duration`, `thumbnail_ready`, `log` (list of the deque's contents). All existing snapshot fields preserved.
 
 ## Thumbnail proxy
 
