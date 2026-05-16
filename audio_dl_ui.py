@@ -421,18 +421,20 @@ _INDEX_CSS_BASE = """  :root {
     -webkit-font-smoothing: antialiased;
   }
   body {
-    display: flex; flex-direction: column;
-    padding: 0;
+    display: grid;
     min-height: 100vh;
-    gap: 0;
+    grid-template-areas: "status" "main" "keys";
+    grid-template-rows: auto 1fr auto;
+    grid-template-columns: 1fr;
     line-height: var(--line-height);
   }
   /* ── Status bar (top) ── */
   #status-bar {
+    grid-area: status;
     display: flex; align-items: center; gap: 0;
     background: var(--bg); color: var(--dim);
     border-bottom: 1px solid var(--frame);
-    padding: 0 1ch; height: 1.6em; flex-shrink: 0;
+    padding: 0 1ch; height: 1.6em;
     white-space: nowrap; overflow: hidden; font-size: var(--fs-sm);
   }
   #status-bar .sb-app { color: var(--accent); font-weight: 600; margin-right: 1.5ch; }
@@ -480,10 +482,11 @@ _INDEX_CSS_BASE = """  :root {
   button.tui-btn { text-shadow: var(--glow); }
   /* ── Footer keybar (bottom) ── */
   #keybar {
+    grid-area: keys;
     display: flex; align-items: center; gap: 0;
     background: var(--bg); color: var(--dim);
     border-top: 1px solid var(--frame);
-    padding: 0 1ch; height: 1.6em; flex-shrink: 0;
+    padding: 0 1ch; height: 1.6em;
     white-space: nowrap; overflow: hidden; font-size: var(--fs-sm);
   }
   #keybar .kb-item { display: flex; align-items: center; margin-right: 1.5ch; }
@@ -496,10 +499,10 @@ _INDEX_CSS_BASE = """  :root {
   }
   /* ── Main content area between status bar and keybar ── */
   #main-content {
-    display: flex; flex-direction: column;
-    flex: 1; min-height: 0;
-    padding: 0.4rem 1ch;
-    gap: 0;
+    grid-area: main;
+    display: grid;
+    place-items: stretch;
+    min-height: 0; overflow: auto;
   }
   /* ── Frame rows: flex-based so the ─ fills span full viewport width ── */
   .frame {
@@ -532,13 +535,17 @@ _INDEX_CSS_BASE = """  :root {
   /* ── Two-pane layout: form left, jobs right on wide viewports ── */
   .panes {
     display: grid;
+    grid-template-areas: "input" "output";
     grid-template-columns: 1fr;
-    flex: 1;
     min-height: 0;
-    gap: 0 2ch;
+    gap: var(--pane-gap, 0.7em);
+    padding: var(--pane-padding, 0.5rem 1rem);
   }
+  .panes .panel:nth-child(1) { grid-area: input; }
+  .panes .panel:nth-child(2) { grid-area: output; }
   @media (min-width: 1200px) {
     .panes {
+      grid-template-areas: "input output";
       grid-template-columns: minmax(44ch, 1fr) minmax(0, 1.4fr);
       align-items: start;
     }
@@ -707,6 +714,17 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     --frame-rule-width: 1px;
     --frame-rule-style: solid;
   }
+  /* Phosphor: baseline — status top, 2 horizontal panes, keybar bottom */
+  html[data-theme="phosphor"] body {
+    grid-template-areas: "status" "main" "keys";
+    grid-template-rows: auto 1fr auto;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="phosphor"] .panes {
+      grid-template-areas: "input output";
+      grid-template-columns: 1fr 1fr;
+    }
+  }
   :root[data-theme="rose"] {
     --bg: #191724;     --fg: #e0def4;     --frame: #403d52;  --label: #908caa;
     --accent: #ebbcba; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
@@ -727,6 +745,25 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     font-style: italic;
     font-weight: 400;
   }
+  /* Rose Pine: editorial single-column centered, stacked panes, magazine feel */
+  html[data-theme="rose"] body {
+    grid-template-areas: "status" "main" "keys";
+    grid-template-rows: auto 1fr auto;
+  }
+  html[data-theme="rose"] .panes {
+    grid-template-areas: "input" "output";
+    grid-template-columns: 1fr;
+    max-width: 760px;
+    margin: 2rem auto;
+    gap: 2rem;
+    padding: 0;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="rose"] .panes {
+      grid-template-areas: "input" "output";
+      grid-template-columns: 1fr;
+    }
+  }
   :root[data-theme="moon"] {
     --bg: #232136;     --fg: #e0def4;     --frame: #44415a;  --label: #908caa;
     --accent: #ea9a97; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
@@ -742,6 +779,50 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   html[data-theme="moon"] .panel {
     border-left: 4px solid var(--accent);
     padding-left: 1em;
+  }
+  /* Rose Pine Moon: vertical status bar on right side, stacked panes, keybar bottom */
+  html[data-theme="moon"] body {
+    grid-template-areas: "main status" "keys keys";
+    grid-template-columns: 1fr auto;
+    grid-template-rows: 1fr auto;
+  }
+  html[data-theme="moon"] #status-bar {
+    writing-mode: vertical-rl;
+    border-bottom: none;
+    border-left: 2px solid var(--frame);
+    height: auto;
+    width: 1.8em;
+    padding: 1rem 0;
+    align-items: flex-start;
+    overflow: hidden;
+  }
+  html[data-theme="moon"] .panes {
+    grid-template-areas: "input" "output";
+    grid-template-columns: 1fr;
+    max-width: 760px;
+    margin: 2rem auto;
+    padding: 0;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="moon"] .panes {
+      grid-template-areas: "input" "output";
+      grid-template-columns: 1fr;
+    }
+  }
+  @media (max-width: 800px) {
+    html[data-theme="moon"] body {
+      grid-template-areas: "status" "main" "keys";
+      grid-template-columns: 1fr;
+      grid-template-rows: auto 1fr auto;
+    }
+    html[data-theme="moon"] #status-bar {
+      writing-mode: horizontal-tb;
+      border-left: none;
+      border-bottom: 1px solid var(--frame);
+      width: auto;
+      height: 1.6em;
+      padding: 0 1ch;
+    }
   }
   :root[data-theme="dawn"] {
     --bg: #faf4ed;     --fg: #575279;     --frame: #cecacd;  --label: #797593;
@@ -762,6 +843,33 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   html[data-theme="dawn"] button.tui-btn:hover {
     filter: none;
     text-decoration: underline;
+  }
+  /* Rose Pine Dawn: paper/page — faux page margins, stacked panes centered */
+  html[data-theme="dawn"] body {
+    grid-template-areas: "status" "main" "keys";
+    grid-template-rows: auto 1fr auto;
+    padding: 2rem 0;
+    background: #d8d2c4;
+  }
+  html[data-theme="dawn"] #main-content {
+    max-width: 760px;
+    margin: 0 auto;
+    background: var(--bg);
+    padding: 2.5rem 3rem;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+    border-radius: 2px;
+  }
+  html[data-theme="dawn"] .panes {
+    grid-template-areas: "input" "output";
+    grid-template-columns: 1fr;
+    padding: 0;
+    gap: 1.5rem;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="dawn"] .panes {
+      grid-template-areas: "input" "output";
+      grid-template-columns: 1fr;
+    }
   }
   :root[data-theme="amber"] {
     --bg: #0a0600;     --fg: #ffb000;     --frame: #4a3000;  --label: #8a5a00;
@@ -802,6 +910,26 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   }
   [data-theme="amber"] .label { letter-spacing: 0.05em; }
   [data-theme="amber"] .body-section { line-height: 1.65; }
+  /* Amber CRT: vintage single-column, panes stacked, status/keybar centered */
+  html[data-theme="amber"] body {
+    grid-template-areas: "status" "main" "keys";
+    grid-template-rows: auto 1fr auto;
+  }
+  html[data-theme="amber"] #status-bar { justify-content: center; text-align: center; }
+  html[data-theme="amber"] #keybar { justify-content: center; }
+  html[data-theme="amber"] .panes {
+    grid-template-areas: "input" "output";
+    grid-template-columns: 1fr;
+    max-width: 70ch;
+    margin: 0 auto;
+    padding: 0.7em 1em;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="amber"] .panes {
+      grid-template-areas: "input" "output";
+      grid-template-columns: 1fr;
+    }
+  }
   :root[data-theme="solarized"] {
     --bg: #002b36;     --fg: #93a1a1;     --frame: #073642;  --label: #586e75;
     --accent: #b58900; --ok: #859900;     --err: #dc322f;    --warn: #cb4b16;
@@ -849,6 +977,33 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     font-feature-settings: "tnum" 1;
     font-variant-numeric: tabular-nums;
   }
+  /* Solarized Dark: scholarly — asymmetric panes (input narrower), fixed keybar top-right */
+  html[data-theme="solarized"] body {
+    grid-template-areas: "status" "main";
+    grid-template-rows: auto 1fr;
+  }
+  html[data-theme="solarized"] #keybar {
+    position: fixed; top: 0; right: 1rem;
+    height: 1.6em; border: none; border-left: 1px solid var(--frame);
+    background: var(--bg); padding: 0 1ch;
+    z-index: 50;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="solarized"] .panes {
+      grid-template-areas: "input output";
+      grid-template-columns: 1fr 1.2fr;
+    }
+  }
+  @media (max-width: 800px) {
+    html[data-theme="solarized"] body {
+      grid-template-areas: "status" "main" "keys";
+      grid-template-rows: auto 1fr auto;
+    }
+    html[data-theme="solarized"] #keybar {
+      position: static; border: none;
+      border-top: 1px solid var(--frame);
+    }
+  }
   :root[data-theme="gruvbox"] {
     --bg: #282828;     --fg: #ebdbb2;     --frame: #504945;  --label: #928374;
     --accent: #fabd2f; --ok: #b8bb26;     --err: #fb4934;    --warn: #fe8019;
@@ -892,6 +1047,31 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     letter-spacing: 0.08em;
   }
   [data-theme="gruvbox"] .body-section { line-height: 1.45; }
+  /* Gruvbox Dark: brutalist menubar — keybar at TOP, stacked panes below */
+  html[data-theme="gruvbox"] body {
+    grid-template-areas: "keys" "status" "main";
+    grid-template-rows: auto auto 1fr;
+  }
+  html[data-theme="gruvbox"] #keybar {
+    border-top: none;
+    border-bottom: 2px solid var(--accent);
+    justify-content: flex-start;
+  }
+  html[data-theme="gruvbox"] #status-bar {
+    border-bottom-width: 2px;
+    border-bottom-color: var(--accent);
+  }
+  html[data-theme="gruvbox"] .panes {
+    grid-template-areas: "input" "output";
+    grid-template-columns: 1fr;
+    padding: 0.5em 1.1em;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="gruvbox"] .panes {
+      grid-template-areas: "input" "output";
+      grid-template-columns: 1fr;
+    }
+  }
   :root[data-theme="tokyo"] {
     --bg: #1a1b26;     --fg: #c0caf5;     --frame: #565f89;  --label: #565f89;
     --accent: #bb9af7; --ok: #9ece6a;     --err: #f7768e;    --warn: #e0af68;
@@ -929,6 +1109,25 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   :root[data-theme="tokyo"] .frame .panel-title {
     letter-spacing: 0.15em;
     text-transform: uppercase;
+  }
+  /* Tokyo Night: cyberpunk — main content top, keybar middle, status at bottom */
+  html[data-theme="tokyo"] body {
+    grid-template-areas: "main" "keys" "status";
+    grid-template-rows: 1fr auto auto;
+  }
+  html[data-theme="tokyo"] #status-bar {
+    border-top: 3px double var(--frame);
+    border-bottom: none;
+  }
+  html[data-theme="tokyo"] #keybar {
+    border-top: none;
+    border-bottom: 3px double var(--frame);
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="tokyo"] .panes {
+      grid-template-areas: "input output";
+      grid-template-columns: 1fr 1.4fr;
+    }
   }
   :root[data-theme="atom"] {
     --bg: #282c34;     --fg: #abb2bf;     --frame: #3e4451;  --label: #5c6370;
@@ -974,6 +1173,20 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   :root[data-theme="atom"] .accent {
     font-style: italic;
   }
+  /* Atom Dark Pro: IDE layout — fixed-width sidebar (input), flex main area (output) */
+  html[data-theme="atom"] body {
+    grid-template-areas: "status" "main" "keys";
+    grid-template-rows: auto 1fr auto;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="atom"] .panes {
+      grid-template-areas: "input output";
+      grid-template-columns: 360px 1fr;
+    }
+    html[data-theme="atom"] .panes .panel:nth-child(1) {
+      border-right: 1px solid var(--frame);
+    }
+  }
   :root[data-theme="claude"] {
     --bg: #181513;     --fg: #efe9d9;     --frame: #4d4641;  --label: #8a7a6a;
     --accent: #d97757; --ok: #88a86c;     --err: #d5524d;    --warn: #d99155;
@@ -1005,12 +1218,6 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     background: rgba(217,119,87,0.03);
     border-radius: 8px;
   }
-  /* Claude — asymmetric two-pane layout on wide viewports (output gets more room) */
-  @media (min-width: 1200px) {
-    :root[data-theme="claude"] .panes {
-      grid-template-columns: 1fr 1.6fr;
-    }
-  }
   /* Claude — large, light app title in the status bar */
   :root[data-theme="claude"] #status-bar .sb-app {
     font-size: 1.05em;
@@ -1030,6 +1237,41 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   :root[data-theme="claude"] .frame .panel-title {
     letter-spacing: 0.06em;
     font-size: 13px;
+  }
+  /* Claude: signature — floating status overlay, no terminal chrome, asymmetric panes */
+  html[data-theme="claude"] body {
+    grid-template-areas: "main" "keys";
+    grid-template-rows: 1fr auto;
+    padding: 1.5rem 2rem;
+    gap: 1rem;
+  }
+  html[data-theme="claude"] #status-bar {
+    position: fixed; top: 1.5rem; right: 2rem;
+    border: none; background: rgba(217,119,87,0.08);
+    padding: 0.4em 1em; border-radius: 999px; width: auto;
+    height: auto; white-space: nowrap;
+    z-index: 40;
+  }
+  html[data-theme="claude"] #keybar {
+    background: rgba(217,119,87,0.04); border-radius: 999px;
+    border: 1px solid var(--frame); justify-content: center;
+  }
+  @media (min-width: 1200px) {
+    html[data-theme="claude"] .panes {
+      grid-template-areas: "input output";
+      grid-template-columns: 1fr 1.4fr;
+      gap: 1.5rem;
+    }
+  }
+  @media (max-width: 800px) {
+    html[data-theme="claude"] body {
+      padding: 1rem;
+    }
+    html[data-theme="claude"] #status-bar {
+      position: static;
+      border-radius: 0; background: transparent;
+      padding: 0 1ch; height: 1.6em; width: auto;
+    }
   }
 """
 
