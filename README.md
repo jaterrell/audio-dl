@@ -61,8 +61,11 @@ pipx install 'audio-dl[ui]'   # or: pip install '.[ui]'
 audio-dl-ui                   # opens http://127.0.0.1:8000 in your browser
 ```
 
-Paste URLs, pick a format, click Download. Live progress per URL, parallel
-jobs slider (1–8), whole-job Cancel, click to reveal saved files in Finder.
+Paste URLs, pick a format, click Download. Each URL becomes a card
+showing its thumbnail, title, uploader, duration, live speed/ETA/bytes,
+and the last few lines of yt-dlp output. 10 themes (toggle in the
+header), parallel jobs slider (1–8), whole-job Cancel, click to reveal
+saved files in Finder.
 
 ```bash
 audio-dl-ui --port 9000              # custom port
