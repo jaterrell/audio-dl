@@ -380,7 +380,7 @@ _INDEX_TEMPLATE = """<!doctype html>
 
 _INDEX_CSS_BASE = """  :root {
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'Cascadia Code', monospace;
-    font-size: 14px;
+    font-size: 17px;
     line-height: 1.35;
   }
   *, *::before, *::after { box-sizing: border-box; }
@@ -401,7 +401,7 @@ _INDEX_CSS_BASE = """  :root {
     background: var(--bg); color: var(--dim);
     border-bottom: 1px solid var(--frame);
     padding: 0 1ch; height: 1.6em; flex-shrink: 0;
-    white-space: nowrap; overflow: hidden; font-size: 13px;
+    white-space: nowrap; overflow: hidden; font-size: 15px;
   }
   #status-bar .sb-app { color: var(--accent); font-weight: 600; margin-right: 1.5ch; }
   #status-bar .sb-sep { color: var(--frame); margin: 0 1ch; }
@@ -411,16 +411,48 @@ _INDEX_CSS_BASE = """  :root {
   #status-indicator.active { color: var(--live); }
   #status-indicator.done { color: var(--ok); }
   #status-indicator.failed { color: var(--err); }
+  /* Idle breathing pulse — CSS-only, no JS state changes needed */
+  #status-indicator:not(.active):not(.done):not(.failed) {
+    animation: idle-breathe 2.4s ease-in-out infinite;
+  }
+  /* Blinking cursor: sibling of #status-indicator, visible only when idle */
+  #idle-cursor {
+    color: var(--dim); margin-left: 0.4ch;
+    animation: cursor-blink 1.2s steps(1, end) infinite;
+  }
+  #status-indicator.active ~ #idle-cursor,
+  #status-indicator.done ~ #idle-cursor,
+  #status-indicator.failed ~ #idle-cursor { display: none; }
+  @keyframes idle-breathe {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+  }
+  @keyframes cursor-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
   @media (max-width: 600px) {
     #status-bar .sb-meta { display: none; }
+    #sb-clock { display: none; }
   }
+  /* ── Live clock ── */
+  #sb-clock {
+    color: var(--dim); margin-left: 1.5ch; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  /* ── Glow for dark themes (dawn sets --glow: none) ── */
+  .frame .title { text-shadow: var(--glow); }
+  .accent { color: var(--accent); text-shadow: var(--glow); }
+  .marker { color: var(--accent); text-shadow: var(--glow); }
+  #status-indicator { text-shadow: var(--glow); }
+  button.tui-btn { text-shadow: var(--glow); }
   /* ── Footer keybar (bottom) ── */
   #keybar {
     display: flex; align-items: center; gap: 0;
     background: var(--bg); color: var(--dim);
     border-top: 1px solid var(--frame);
     padding: 0 1ch; height: 1.6em; flex-shrink: 0;
-    white-space: nowrap; overflow: hidden; font-size: 12px;
+    white-space: nowrap; overflow: hidden; font-size: 14px;
   }
   #keybar .kb-item { display: flex; align-items: center; margin-right: 1.5ch; }
   #keybar .kb-key { color: var(--dim); }
@@ -451,7 +483,7 @@ _INDEX_CSS_BASE = """  :root {
     min-width: 1ch;
   }
   .frame .panel-title {
-    color: var(--label); font-size: 12px; letter-spacing: 0.06em;
+    color: var(--label); font-size: 14px; letter-spacing: 0.06em;
     flex-shrink: 0;
   }
   .frame .panel-title .pt-bracket { color: var(--frame); }
@@ -460,7 +492,7 @@ _INDEX_CSS_BASE = """  :root {
   .frame .theme-btn {
     color: var(--accent); background: rgba(255,255,255,0.04);
     padding: 0 6px; cursor: pointer; user-select: none;
-    flex-shrink: 0; font-size: 12px;
+    flex-shrink: 0; font-size: 14px;
   }
   .frame .theme-btn:hover { background: rgba(255,255,255,0.08); }
   .frame .frame-seg { flex-shrink: 0; color: var(--frame); }
@@ -485,7 +517,6 @@ _INDEX_CSS_BASE = """  :root {
   .body-section .field-line { display: flex; align-items: baseline; gap: 4px; padding: 1px 0; }
   .label { color: var(--label); display: inline-block; min-width: 10ch; }
   .marker { color: var(--accent); }
-  .accent { color: var(--accent); }
   .ok { color: var(--ok); }
   .err { color: var(--err); }
   .warn { color: var(--warn); }
@@ -500,16 +531,16 @@ _INDEX_CSS_BASE = """  :root {
   select.field { cursor: pointer; }
   input[type=range].slider {
     appearance: none; -webkit-appearance: none;
-    height: 5px; background: var(--frame); border-radius: 3px; outline: 0;
+    height: 6px; background: var(--frame); border-radius: 3px; outline: 0;
     flex: 1; max-width: 22ch;
   }
   input[type=range].slider::-webkit-slider-thumb {
     appearance: none; -webkit-appearance: none;
-    width: 12px; height: 12px; border-radius: 50%;
+    width: 15px; height: 15px; border-radius: 50%;
     background: var(--accent); cursor: pointer;
   }
   input[type=range].slider::-moz-range-thumb {
-    width: 12px; height: 12px; border-radius: 50%;
+    width: 15px; height: 15px; border-radius: 50%;
     background: var(--accent); cursor: pointer; border: 0;
   }
   button.tui-btn {
@@ -522,20 +553,23 @@ _INDEX_CSS_BASE = """  :root {
   button.cancel-btn {
     background: transparent; color: var(--err);
     border: 1px solid var(--frame); padding: 0 7px;
-    font: inherit; font-size: 11px; cursor: pointer;
+    font: inherit; font-size: 13px; cursor: pointer;
   }
   /* ── Job panel ── */
   #jobpanel { min-height: 0; }
   #jobpanel[hidden] { display: none; }
-  .summary { color: var(--dim); font-size: 12px; }
-  .jobpanel-empty { color: var(--dim); padding-left: 1ch; font-style: italic; font-size: 12px; }
+  .summary { color: var(--dim); font-size: 14px; }
+  .jobpanel-empty { color: var(--dim); padding-left: 1ch; font-style: italic; font-size: 14px; }
+  /* live-pulse: opacity fade + live-color text-shadow pulse */
   .live-pulse { animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+    0%, 100% { opacity: 1; text-shadow: 0 0 4px var(--live); }
+    50% { opacity: 0.4; text-shadow: none; }
   }
   @media (prefers-reduced-motion: reduce) {
     .live-pulse { animation: none; }
+    #status-indicator:not(.active):not(.done):not(.failed) { animation: none; }
+    #idle-cursor { animation: none; }
   }
   /* ── URL rows: grid for columnar alignment ── */
   .url-row {
@@ -544,24 +578,24 @@ _INDEX_CSS_BASE = """  :root {
     align-items: baseline;
     gap: 0 1ch;
     padding: 1px 0;
-    font-size: 13px;
+    font-size: 15px;
   }
   .url-row .col-glyph { flex-shrink: 0; }
   .url-row .col-url { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .url-row .col-right {
     display: flex; align-items: baseline; gap: 1ch;
-    justify-content: flex-end; white-space: nowrap; font-size: 12px;
+    justify-content: flex-end; white-space: nowrap; font-size: 14px;
   }
   .url-row .result-arrow { color: var(--frame); }
   .url-row .result-name { color: var(--accent); overflow: hidden; text-overflow: ellipsis; max-width: 30ch; }
   .url-row .reveal-btn {
     background: transparent; color: var(--accent);
     border: 1px solid var(--frame); padding: 0 5px;
-    font: inherit; font-size: 11px; cursor: pointer;
+    font: inherit; font-size: 13px; cursor: pointer;
   }
   /* ── Stats subpanel inside OUTPUT panel ── */
   #stats-panel {
-    font-size: 12px;
+    font-size: 14px;
     margin-bottom: 2px;
   }
   #stats-panel .stats-frame { margin-bottom: 0; }
@@ -584,18 +618,18 @@ _INDEX_CSS_BASE = """  :root {
   /* ── Popover ── */
   #theme-popover[hidden] { display: none; }
   #theme-popover {
-    position: fixed; top: 2.2rem; right: 1rem; width: 380px;
+    position: fixed; top: 2.2rem; right: 1rem; width: 440px;
     background: var(--bg); color: var(--fg);
     border: 1px solid var(--frame);
     padding: 12px; z-index: 100;
     box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-    font-size: 12px;
+    font-size: 14px;
   }
   #theme-popover .pop-header {
     color: var(--accent); font-weight: 600; margin-bottom: 4px;
     display: flex; justify-content: space-between; align-items: center;
   }
-  #theme-popover .pop-sub { color: var(--dim); font-size: 11px; margin-bottom: 10px; }
+  #theme-popover .pop-sub { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
   #theme-popover input.pop-search {
     background: var(--bg); border: 1px solid var(--frame);
     padding: 4px 8px; color: var(--fg); font: inherit;
@@ -612,10 +646,10 @@ _INDEX_CSS_BASE = """  :root {
   #theme-popover .thumb.active { border-color: var(--accent); }
   #theme-popover .thumb:focus { outline: 0; border-color: var(--accent); }
   #theme-popover .thumb .preview {
-    padding: 5px 7px; font-size: 9px; line-height: 1.3; min-height: 44px;
+    padding: 5px 7px; font-size: 11px; line-height: 1.3; min-height: 44px;
   }
   #theme-popover .thumb .name {
-    background: rgba(0,0,0,0.4); padding: 3px 7px; font-size: 10px;
+    background: rgba(0,0,0,0.4); padding: 3px 7px; font-size: 12px;
     color: var(--fg); display: flex; justify-content: space-between;
   }
   @media (max-width: 480px) {
@@ -627,60 +661,72 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     --bg: #000;        --fg: #d0d0d0;     --frame: #1a4a1a;  --label: #707070;
     --accent: #00ff88; --ok: #00ff88;     --err: #ff5555;    --warn: #ffaa33;
     --live: #00d9ff;   --dim: #555;       --bar: #00d9ff;    --btn-fg: #000;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="rose"] {
     --bg: #191724;     --fg: #e0def4;     --frame: #403d52;  --label: #908caa;
     --accent: #ebbcba; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
     --live: #c4a7e7;   --dim: #6e6a86;    --bar: #c4a7e7;    --btn-fg: #191724;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="moon"] {
     --bg: #232136;     --fg: #e0def4;     --frame: #44415a;  --label: #908caa;
     --accent: #ea9a97; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
     --live: #c4a7e7;   --dim: #6e6a86;    --bar: #c4a7e7;    --btn-fg: #232136;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="dawn"] {
     --bg: #faf4ed;     --fg: #575279;     --frame: #cecacd;  --label: #797593;
     --accent: #d7827e; --ok: #56949f;     --err: #b4637a;    --warn: #ea9d34;
     --live: #907aa9;   --dim: #9893a5;    --bar: #907aa9;    --btn-fg: #faf4ed;
+    --glow: none;
   }
   :root[data-theme="amber"] {
     --bg: #0a0600;     --fg: #ffb000;     --frame: #4a3000;  --label: #8a5a00;
     --accent: #ffb000; --ok: #ffb000;     --err: #ff4500;    --warn: #ff8800;
     --live: #ff8800;   --dim: #4a3000;    --bar: #ff8800;    --btn-fg: #0a0600;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="solarized"] {
     --bg: #002b36;     --fg: #93a1a1;     --frame: #073642;  --label: #586e75;
     --accent: #b58900; --ok: #859900;     --err: #dc322f;    --warn: #cb4b16;
     --live: #2aa198;   --dim: #586e75;    --bar: #268bd2;    --btn-fg: #002b36;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="gruvbox"] {
     --bg: #282828;     --fg: #ebdbb2;     --frame: #504945;  --label: #928374;
     --accent: #fabd2f; --ok: #b8bb26;     --err: #fb4934;    --warn: #fe8019;
     --live: #8ec07c;   --dim: #665c54;    --bar: #83a598;    --btn-fg: #282828;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="tokyo"] {
     --bg: #1a1b26;     --fg: #c0caf5;     --frame: #565f89;  --label: #565f89;
     --accent: #bb9af7; --ok: #9ece6a;     --err: #f7768e;    --warn: #e0af68;
     --live: #7dcfff;   --dim: #414868;    --bar: #7dcfff;    --btn-fg: #1a1b26;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="atom"] {
     --bg: #282c34;     --fg: #abb2bf;     --frame: #3e4451;  --label: #5c6370;
     --accent: #c678dd; --ok: #98c379;     --err: #e06c75;    --warn: #d19a66;
     --live: #61afef;   --dim: #4b5263;    --bar: #61afef;    --btn-fg: #282c34;
+    --glow: 0 0 6px var(--accent);
   }
   :root[data-theme="claude"] {
     --bg: #181513;     --fg: #efe9d9;     --frame: #4d4641;  --label: #8a7a6a;
     --accent: #d97757; --ok: #88a86c;     --err: #d5524d;    --warn: #d99155;
     --live: #e8a866;   --dim: #4d4641;    --bar: #e8a866;    --btn-fg: #181513;
+    --glow: 0 0 6px var(--accent);
   }
 """
 
 _INDEX_HTML_BODY = """<div id="status-bar">
   <span class="sb-app">audio-dl</span>
-  <span id="status-indicator">◌ idle</span>
+  <span id="status-indicator">◌ idle</span><span id="idle-cursor">▌</span>
   <span class="sb-sep sb-meta">·</span>
   <span class="sb-meta" id="sb-meta-text"></span>
   <span class="sb-fill"></span>
+  <span id="sb-clock" class="dim"></span>
+  <span class="sb-sep dim" style="margin-left:1ch;">──</span>
   <span class="sb-ver dim">v__VERSION__</span>
 </div>
 
@@ -774,13 +820,27 @@ _INDEX_JS = """const THEMES = [
   // ── Status indicator (top bar) ───────────────────────────────────────
   const statusIndicator = $('status-indicator');
   const sbMetaText = $('sb-meta-text');
-  const SPIN_FRAMES = ['◐', '◑', '◒', '◓', '◔', '◕'];
+  const SPIN_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   let spinInterval = null;
   let spinFrame = 0;
 
   const reducedMotion = window.matchMedia
     ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
     : false;
+
+  // ── Live clock ────────────────────────────────────────────────────────
+  // Clock is information, not decoration — keeps ticking under reduced-motion.
+  function tickClock() {
+    const clockEl = $('sb-clock');
+    if (!clockEl) return;
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const ss = String(now.getSeconds()).padStart(2, '0');
+    clockEl.textContent = `${hh}:${mm}:${ss}`;
+  }
+  tickClock();
+  setInterval(tickClock, 1000);
 
   function startSpinner() {
     if (spinInterval) return;
@@ -790,7 +850,7 @@ _INDEX_JS = """const THEMES = [
       const label = counts.active > 0
         ? ` downloading ${counts.active} / ${counts.done + counts.active}`
         : '';
-      statusIndicator.textContent = '◐' + label;
+      statusIndicator.textContent = '⠿' + label;
       return;
     }
     spinInterval = setInterval(() => {
@@ -799,7 +859,7 @@ _INDEX_JS = """const THEMES = [
         ? ` downloading ${counts.active} / ${counts.done + counts.active}`
         : '';
       statusIndicator.textContent = SPIN_FRAMES[spinFrame] + label;
-    }, 180);
+    }, 100);
   }
 
   function stopSpinner() {
