@@ -380,8 +380,39 @@ _INDEX_TEMPLATE = """<!doctype html>
 
 _INDEX_CSS_BASE = """  :root {
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'Cascadia Code', monospace;
-    font-size: 17px;
-    line-height: 1.35;
+    font-size: var(--fs-base);
+    /* ── Proportional typography (clamp: min, vh-preferred, max) ── */
+    --fs-base: clamp(16px, 1.7vh, 24px);
+    --fs-sm:   clamp(13px, 1.4vh, 19px);
+    --fs-lg:   clamp(20px, 2.4vh, 32px);
+    --fs-xl:   clamp(26px, 3.5vh, 48px);
+    /* ── Structural override surface (theme blocks can override these) ── */
+    /* Frame characters — declared contract; corner glyphs live in HTML spans,
+       not CSS content:, so these are forward-looking for themes that rewire
+       via pseudo-elements. Wired vars below affect rendered borders. */
+    --frame-corner-tl: '┌';
+    --frame-corner-tr: '┐';
+    --frame-corner-bl: '└';
+    --frame-corner-br: '┘';
+    --frame-h: '─';
+    --frame-v: '│';
+    --frame-junction-l: '├';
+    --frame-junction-r: '┤';
+    /* Frame rule (wired into .frame .frame-fill) */
+    --frame-rule-color: var(--frame);
+    --frame-rule-width: 1px;
+    --frame-rule-style: solid;
+    /* Spacing */
+    --pane-padding: 0.6em 0.9em;
+    --pane-gap: 0.7em;
+    --line-height: 1.5;
+    /* Title typography */
+    --title-weight: 400;
+    --title-letterspacing: 0.01em;
+    --title-transform: none;
+    /* Decoration — declared contract; used by JS-rendered content indirectly */
+    --section-divider: ' · ';
+    --idle-cursor-char: '▌';
   }
   *, *::before, *::after { box-sizing: border-box; }
   html, body {
@@ -394,6 +425,7 @@ _INDEX_CSS_BASE = """  :root {
     padding: 0;
     min-height: 100vh;
     gap: 0;
+    line-height: var(--line-height);
   }
   /* ── Status bar (top) ── */
   #status-bar {
@@ -401,7 +433,7 @@ _INDEX_CSS_BASE = """  :root {
     background: var(--bg); color: var(--dim);
     border-bottom: 1px solid var(--frame);
     padding: 0 1ch; height: 1.6em; flex-shrink: 0;
-    white-space: nowrap; overflow: hidden; font-size: 15px;
+    white-space: nowrap; overflow: hidden; font-size: var(--fs-sm);
   }
   #status-bar .sb-app { color: var(--accent); font-weight: 600; margin-right: 1.5ch; }
   #status-bar .sb-sep { color: var(--frame); margin: 0 1ch; }
@@ -452,7 +484,7 @@ _INDEX_CSS_BASE = """  :root {
     background: var(--bg); color: var(--dim);
     border-top: 1px solid var(--frame);
     padding: 0 1ch; height: 1.6em; flex-shrink: 0;
-    white-space: nowrap; overflow: hidden; font-size: 14px;
+    white-space: nowrap; overflow: hidden; font-size: var(--fs-sm);
   }
   #keybar .kb-item { display: flex; align-items: center; margin-right: 1.5ch; }
   #keybar .kb-key { color: var(--dim); }
@@ -478,21 +510,22 @@ _INDEX_CSS_BASE = """  :root {
   .frame .frame-corner { color: var(--frame); }
   .frame .frame-fill {
     flex: 1; overflow: hidden;
-    border-bottom: 1px solid var(--frame);
+    border-bottom: var(--frame-rule-width) var(--frame-rule-style) var(--frame-rule-color);
     margin-bottom: 0.35em;
     min-width: 1ch;
   }
   .frame .panel-title {
-    color: var(--label); font-size: 14px; letter-spacing: 0.06em;
+    color: var(--label); font-size: var(--fs-sm); letter-spacing: var(--title-letterspacing);
+    font-weight: var(--title-weight); text-transform: var(--title-transform);
     flex-shrink: 0;
   }
   .frame .panel-title .pt-bracket { color: var(--frame); }
   .frame .panel-title .pt-label { color: var(--accent); }
-  .frame .title { color: var(--accent); font-weight: 400; }
+  .frame .title { color: var(--accent); font-weight: var(--title-weight); }
   .frame .theme-btn {
     color: var(--accent); background: rgba(255,255,255,0.04);
     padding: 0 6px; cursor: pointer; user-select: none;
-    flex-shrink: 0; font-size: 14px;
+    flex-shrink: 0; font-size: var(--fs-sm);
   }
   .frame .theme-btn:hover { background: rgba(255,255,255,0.08); }
   .frame .frame-seg { flex-shrink: 0; color: var(--frame); }
@@ -546,20 +579,20 @@ _INDEX_CSS_BASE = """  :root {
   button.tui-btn {
     color: var(--btn-fg); background: var(--accent);
     border: 0; padding: 1px 12px; font: inherit; font-weight: 600;
-    cursor: pointer;
+    cursor: pointer; font-size: var(--fs-sm);
   }
   button.tui-btn:hover { filter: brightness(1.1); }
   button.tui-btn:disabled { opacity: 0.4; cursor: default; }
   button.cancel-btn {
     background: transparent; color: var(--err);
     border: 1px solid var(--frame); padding: 0 7px;
-    font: inherit; font-size: 13px; cursor: pointer;
+    font: inherit; font-size: var(--fs-sm); cursor: pointer;
   }
   /* ── Job panel ── */
   #jobpanel { min-height: 0; }
   #jobpanel[hidden] { display: none; }
-  .summary { color: var(--dim); font-size: 14px; }
-  .jobpanel-empty { color: var(--dim); padding-left: 1ch; font-style: italic; font-size: 14px; }
+  .summary { color: var(--dim); font-size: var(--fs-sm); }
+  .jobpanel-empty { color: var(--dim); padding-left: 1ch; font-style: italic; font-size: var(--fs-sm); }
   /* live-pulse: opacity fade + live-color text-shadow pulse */
   .live-pulse { animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse {
@@ -578,24 +611,24 @@ _INDEX_CSS_BASE = """  :root {
     align-items: baseline;
     gap: 0 1ch;
     padding: 1px 0;
-    font-size: 15px;
+    font-size: var(--fs-sm);
   }
   .url-row .col-glyph { flex-shrink: 0; }
   .url-row .col-url { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .url-row .col-right {
     display: flex; align-items: baseline; gap: 1ch;
-    justify-content: flex-end; white-space: nowrap; font-size: 14px;
+    justify-content: flex-end; white-space: nowrap; font-size: var(--fs-sm);
   }
   .url-row .result-arrow { color: var(--frame); }
   .url-row .result-name { color: var(--accent); overflow: hidden; text-overflow: ellipsis; max-width: 30ch; }
   .url-row .reveal-btn {
     background: transparent; color: var(--accent);
     border: 1px solid var(--frame); padding: 0 5px;
-    font: inherit; font-size: 13px; cursor: pointer;
+    font: inherit; font-size: var(--fs-sm); cursor: pointer;
   }
   /* ── Stats subpanel inside OUTPUT panel ── */
   #stats-panel {
-    font-size: 14px;
+    font-size: var(--fs-sm);
     margin-bottom: 2px;
   }
   #stats-panel .stats-frame { margin-bottom: 0; }
@@ -623,13 +656,13 @@ _INDEX_CSS_BASE = """  :root {
     border: 1px solid var(--frame);
     padding: 12px; z-index: 100;
     box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-    font-size: 14px;
+    font-size: var(--fs-sm);
   }
   #theme-popover .pop-header {
     color: var(--accent); font-weight: 600; margin-bottom: 4px;
     display: flex; justify-content: space-between; align-items: center;
   }
-  #theme-popover .pop-sub { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  #theme-popover .pop-sub { color: var(--dim); font-size: var(--fs-sm); margin-bottom: 10px; }
   #theme-popover input.pop-search {
     background: var(--bg); border: 1px solid var(--frame);
     padding: 4px 8px; color: var(--fg); font: inherit;
@@ -646,10 +679,10 @@ _INDEX_CSS_BASE = """  :root {
   #theme-popover .thumb.active { border-color: var(--accent); }
   #theme-popover .thumb:focus { outline: 0; border-color: var(--accent); }
   #theme-popover .thumb .preview {
-    padding: 5px 7px; font-size: 11px; line-height: 1.3; min-height: 44px;
+    padding: 5px 7px; font-size: var(--fs-sm); line-height: 1.3; min-height: 44px;
   }
   #theme-popover .thumb .name {
-    background: rgba(0,0,0,0.4); padding: 3px 7px; font-size: 12px;
+    background: rgba(0,0,0,0.4); padding: 3px 7px; font-size: var(--fs-sm);
     color: var(--fg); display: flex; justify-content: space-between;
   }
   @media (max-width: 480px) {
@@ -658,10 +691,21 @@ _INDEX_CSS_BASE = """  :root {
 """
 
 _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
+    /* colors */
     --bg: #000;        --fg: #d0d0d0;     --frame: #1a4a1a;  --label: #707070;
     --accent: #00ff88; --ok: #00ff88;     --err: #ff5555;    --warn: #ffaa33;
     --live: #00d9ff;   --dim: #555;       --bar: #00d9ff;    --btn-fg: #000;
     --glow: 0 0 6px var(--accent);
+    /* structural — classic dense VT100 identity */
+    --line-height: 1.35;
+    --pane-padding: 0.4em 0.7em;
+    --pane-gap: 0.5em;
+    --title-weight: 400;
+    --title-letterspacing: 0.05em;
+    --title-transform: lowercase;
+    --frame-rule-color: var(--frame);
+    --frame-rule-width: 1px;
+    --frame-rule-style: solid;
   }
   :root[data-theme="rose"] {
     --bg: #191724;     --fg: #e0def4;     --frame: #403d52;  --label: #908caa;
