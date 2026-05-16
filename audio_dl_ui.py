@@ -380,24 +380,60 @@ _INDEX_TEMPLATE = """<!doctype html>
 
 _INDEX_CSS_BASE = """  :root {
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'Cascadia Code', monospace;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.5;
   }
-  body {
-    max-width: 760px; margin: 2rem auto; padding: 1.5rem;
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
     background: var(--bg); color: var(--fg);
     -webkit-font-smoothing: antialiased;
   }
-  .frame { white-space: pre; color: var(--frame); line-height: 1.25; }
+  body {
+    display: flex; flex-direction: column;
+    padding: 0.5rem 1rem 0.5rem;
+    min-height: 100vh;
+    gap: 0;
+  }
+  /* ── Frame rows: flex-based so the ─ fills span full viewport width ── */
+  .frame {
+    color: var(--frame); line-height: 1.4;
+    display: flex; align-items: center; flex-shrink: 0;
+    white-space: nowrap; overflow: hidden;
+  }
+  .frame .frame-corner { color: var(--frame); }
+  .frame .frame-fill {
+    flex: 1; overflow: hidden;
+    border-bottom: 1px solid var(--frame);
+    margin-bottom: 0.35em;
+    min-width: 1ch;
+  }
   .frame .title { color: var(--accent); font-weight: 400; }
   .frame .theme-btn {
     color: var(--accent); background: rgba(255,255,255,0.04);
     padding: 0 6px; cursor: pointer; user-select: none;
+    flex-shrink: 0;
   }
   .frame .theme-btn:hover { background: rgba(255,255,255,0.08); }
-  .body-section { padding-left: 2px; margin: 4px 0; }
+  .frame .frame-seg { flex-shrink: 0; color: var(--frame); }
+  /* ── Two-pane layout: form left, jobs right on wide viewports ── */
+  .panes {
+    display: grid;
+    grid-template-columns: 1fr;
+    flex: 1;
+    min-height: 0;
+    gap: 0 2ch;
+  }
+  @media (min-width: 1200px) {
+    .panes {
+      grid-template-columns: minmax(44ch, 1fr) minmax(0, 1.4fr);
+      align-items: start;
+    }
+  }
+  /* ── Form panel ── */
+  .body-section { padding-left: 1ch; margin: 2px 0; }
   .body-section .field-line { display: flex; align-items: baseline; gap: 4px; }
-  .label { color: var(--label); display: inline-block; min-width: 9ch; }
+  .label { color: var(--label); display: inline-block; min-width: 10ch; }
   .marker { color: var(--accent); }
   .accent { color: var(--accent); }
   .ok { color: var(--ok); }
@@ -410,25 +446,25 @@ _INDEX_CSS_BASE = """  :root {
     background: transparent; color: var(--fg); border: 0; padding: 0;
     font: inherit; outline: 0; flex: 1;
   }
-  textarea.field { resize: vertical; min-height: 3.5rem; width: 100%; }
+  textarea.field { resize: none; height: 9rem; width: 100%; }
   select.field { cursor: pointer; }
   input[type=range].slider {
     appearance: none; -webkit-appearance: none;
     height: 6px; background: var(--frame); border-radius: 3px; outline: 0;
-    flex: 1; max-width: 200px;
+    flex: 1; max-width: 22ch;
   }
   input[type=range].slider::-webkit-slider-thumb {
     appearance: none; -webkit-appearance: none;
-    width: 12px; height: 12px; border-radius: 50%;
+    width: 13px; height: 13px; border-radius: 50%;
     background: var(--accent); cursor: pointer;
   }
   input[type=range].slider::-moz-range-thumb {
-    width: 12px; height: 12px; border-radius: 50%;
+    width: 13px; height: 13px; border-radius: 50%;
     background: var(--accent); cursor: pointer; border: 0;
   }
   button.tui-btn {
     color: var(--btn-fg); background: var(--accent);
-    border: 0; padding: 2px 12px; font: inherit; font-weight: 600;
+    border: 0; padding: 2px 14px; font: inherit; font-weight: 600;
     cursor: pointer;
   }
   button.tui-btn:hover { filter: brightness(1.1); }
@@ -436,9 +472,13 @@ _INDEX_CSS_BASE = """  :root {
   button.cancel-btn {
     background: transparent; color: var(--err);
     border: 1px solid var(--frame); padding: 1px 8px;
-    font: inherit; font-size: 11px; cursor: pointer;
+    font: inherit; font-size: 12px; cursor: pointer;
   }
+  /* ── Job panel ── */
+  #jobpanel { min-height: 0; }
+  #jobpanel[hidden] { display: none; }
   .summary { color: var(--dim); }
+  .jobpanel-empty { color: var(--dim); padding-left: 1ch; font-style: italic; }
   .live-pulse { animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse {
     0%, 100% { opacity: 1; }
@@ -447,37 +487,43 @@ _INDEX_CSS_BASE = """  :root {
   @media (prefers-reduced-motion: reduce) {
     .live-pulse { animation: none; }
   }
-  .url-row { padding: 4px 0; }
+  .url-row { padding: 3px 0; }
   .url-row .url { color: var(--fg); word-break: break-all; }
   .url-row .reveal-btn {
     background: transparent; color: var(--accent);
     border: 1px solid var(--frame); padding: 0 6px;
-    font: inherit; font-size: 11px; cursor: pointer; margin-left: 8px;
+    font: inherit; font-size: 12px; cursor: pointer; margin-left: 8px;
   }
-  /* Popover (added in Task 6 — styles defined here for cohesion) */
+  /* ── Right-pane frame separator on wide screens ── */
+  @media (min-width: 1200px) {
+    #jobpanel[hidden] { display: block; }
+    .jobpanel-empty { display: block; }
+    #jobpanel .jobpanel-empty { display: block; }
+  }
+  /* ── Popover ── */
   #theme-popover[hidden] { display: none; }
   #theme-popover {
-    position: fixed; top: 60px; right: 24px; width: 360px;
+    position: fixed; top: 3rem; right: 1.5rem; width: 380px;
     background: var(--bg); color: var(--fg);
-    border: 1px solid var(--frame); border-radius: 6px;
+    border: 1px solid var(--frame);
     padding: 14px; z-index: 100;
     box-shadow: 0 8px 32px rgba(0,0,0,0.6);
-    font-size: 11px;
+    font-size: 12px;
   }
   #theme-popover .pop-header {
     color: var(--accent); font-weight: 600; margin-bottom: 4px;
     display: flex; justify-content: space-between; align-items: center;
   }
-  #theme-popover .pop-sub { color: var(--dim); font-size: 10px; margin-bottom: 12px; }
+  #theme-popover .pop-sub { color: var(--dim); font-size: 11px; margin-bottom: 12px; }
   #theme-popover input.pop-search {
-    background: var(--bg); border: 1px solid var(--frame); border-radius: 4px;
+    background: var(--bg); border: 1px solid var(--frame);
     padding: 5px 8px; color: var(--fg); font: inherit;
     width: 100%; box-sizing: border-box; margin-bottom: 12px; outline: 0;
   }
   #theme-popover input.pop-search:focus { border-color: var(--accent); }
   #theme-popover .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   #theme-popover .thumb {
-    border-radius: 4px; overflow: hidden; cursor: pointer;
+    overflow: hidden; cursor: pointer;
     border: 2px solid transparent; padding: 0; background: transparent;
     font: inherit; text-align: left;
   }
@@ -485,14 +531,14 @@ _INDEX_CSS_BASE = """  :root {
   #theme-popover .thumb.active { border-color: var(--accent); }
   #theme-popover .thumb:focus { outline: 0; border-color: var(--accent); }
   #theme-popover .thumb .preview {
-    padding: 6px 8px; font-size: 8px; line-height: 1.3; min-height: 48px;
+    padding: 6px 8px; font-size: 9px; line-height: 1.3; min-height: 48px;
   }
   #theme-popover .thumb .name {
-    background: rgba(0,0,0,0.4); padding: 4px 8px; font-size: 9px;
+    background: rgba(0,0,0,0.4); padding: 4px 8px; font-size: 10px;
     color: var(--fg); display: flex; justify-content: space-between;
   }
   @media (max-width: 480px) {
-    #theme-popover { left: 10px; right: 10px; width: auto; }
+    #theme-popover { left: 0.5rem; right: 0.5rem; width: auto; }
   }
 """
 
@@ -548,11 +594,12 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   }
 """
 
-_INDEX_HTML_BODY = """<div class="frame">┌─ <span class="title">audio-dl</span> <span class="dim">─────────────── v__VERSION__ ──── </span><span class="theme-btn" id="theme-btn">theme: <span id="theme-current">phosphor</span> ▾</span> <span class="dim">─┐</span></div>
+_INDEX_HTML_BODY = """<div class="frame"><span class="frame-corner">┌─</span> <span class="title">audio-dl</span> <span class="dim">── v__VERSION__ ──</span><span class="frame-fill"></span><span class="theme-btn" id="theme-btn">theme: <span id="theme-current">phosphor</span> ▾</span><span class="frame-fill"></span><span class="frame-corner">─┐</span></div>
+<div class="panes">
 <form id="dl">
   <div class="body-section">
     <div class="field-line"><span class="label">urls</span><span class="marker">▸</span> <textarea class="field" id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea></div>
-    <div class="field-line"><span class="label">format</span><span class="marker">▸</span> <select class="field" id="format" name="format" style="max-width:180px;">__FORMAT_OPTIONS__</select></div>
+    <div class="field-line"><span class="label">format</span><span class="marker">▸</span> <select class="field" id="format" name="format" style="max-width:18ch;">__FORMAT_OPTIONS__</select></div>
     <div class="field-line"><span class="label">output</span><span class="marker">▸</span> <input class="field" id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required></div>
     <div class="field-line"><span class="label">jobs</span><span class="marker">▸</span> <input class="slider" id="jobs" name="jobs" type="range" min="1" max="8" value="1"> <span id="jobs_val" class="dim">1</span></div>
     <div class="field-line"><span class="label">fragments</span><span class="marker">▸</span> <input class="slider" id="fragments" name="fragments" type="range" min="1" max="16" value="4"> <span id="fragments_val" class="dim">4</span></div>
@@ -562,11 +609,12 @@ _INDEX_HTML_BODY = """<div class="frame">┌─ <span class="title">audio-dl</sp
 </form>
 
 <section id="jobpanel" hidden>
-  <div class="frame">├─ <span class="accent">job</span> <span class="dim">─ </span><span class="summary" id="job-summary">0 done · 0 active · 0 fail</span> <span class="dim">─</span> <button type="button" class="cancel-btn" id="cancel">esc</button> <span class="dim">┤</span></div>
+  <div class="frame"><span class="frame-corner">├─</span> <span class="accent">job</span> <span class="dim">─</span> <span class="summary" id="job-summary">0 done · 0 active · 0 fail</span> <span class="frame-fill"></span><button type="button" class="cancel-btn" id="cancel">esc</button> <span class="frame-corner">┤</span></div>
   <div class="body-section" id="rows"></div>
 </section>
+</div>
 
-<div class="frame">└<span class="dim">────────────────────────────────────────┘</span></div>
+<div class="frame"><span class="frame-corner">└</span><span class="frame-fill"></span><span class="frame-corner">┘</span></div>
 
 <div id="theme-popover" hidden role="dialog" aria-label="Switch theme">
   <div class="pop-header"><span>switch theme</span><span class="dim">⌘T to cycle</span></div>
