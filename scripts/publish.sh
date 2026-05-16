@@ -3,7 +3,13 @@
 # publish.sh — Mirror filtered history from the private repo to the public one.
 #
 # Workflow: clone the private repo --bare into a temp dir, run git-filter-repo
-# to drop EXCLUDE_PATHS, then force-push --mirror to the public repo. Idempotent.
+# to drop EXCLUDE_PATHS, then force-push main + v* tags to the public repo.
+# Idempotent. Manual fallback for .github/workflows/mirror-public.yml.
+#
+# Pushes ONLY refs/heads/main and refs/tags/v* — not --mirror — so internal
+# feature branches never leak to public and non-release tags stay private.
+# Tag deletions are not propagated (releases are permanent). To clean up a
+# stale ref on public, delete it explicitly with `gh api`.
 #
 # Run from anywhere. Requires: git-filter-repo, gh (for release sync, optional).
 # Usage:
@@ -44,11 +50,15 @@ if [[ $DRY_RUN -eq 1 ]]; then
   exit 0
 fi
 
-echo "→ Pushing --mirror to $PUBLIC (force-overwrites public branches/tags)"
-git push --mirror "$PUBLIC"
+echo "→ Pushing main + v* tags to $PUBLIC (force on both)"
+git push "$PUBLIC" \
+  +refs/heads/main:refs/heads/main \
+  '+refs/tags/v*:refs/tags/v*'
 echo "✓ Public mirror updated"
 echo
-echo "Note: GitHub releases (notes, attached assets) are not git objects and"
-echo "do not transfer with --mirror. Re-create them on the public repo with"
-echo "  gh release create <tag> --repo jaterrell/audio-dl --notes-file <file>"
-echo "or via the GitHub UI. Tag refs themselves are already in place."
+echo "Notes:"
+echo "  - Internal feature branches and non-v* tags are NOT pushed."
+echo "  - GitHub releases (notes, attached assets) are not git objects."
+echo "    They're created by public's release.yml on tag push, not here."
+echo "  - To delete a stale ref on public, do it explicitly:"
+echo "      gh api -X DELETE repos/jaterrell/audio-dl/git/refs/heads/<branch>"

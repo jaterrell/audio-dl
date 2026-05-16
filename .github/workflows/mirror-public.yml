@@ -2,8 +2,9 @@ name: Mirror to public
 
 # Auto-mirror this private repo to the public one with .claude/ and
 # CLAUDE.md filtered out of history. Runs on every push to main and on
-# any v* tag — matches the behavior of scripts/publish.sh, which stays
-# available as the manual fallback.
+# any v* tag. Pushes ONLY refs/heads/main and refs/tags/v* — not
+# --mirror — so internal feature branches never leak to public and
+# non-release tags stay private. Manual fallback: scripts/publish.sh.
 #
 # Setup (one-time):
 #   1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
@@ -79,20 +80,22 @@ jobs:
           fi
           echo "✓ MIRROR_PAT secret present"
 
-      - name: Force-push --mirror to public
+      - name: Force-push main + v* tags to public
         working-directory: repo.git
         env:
           MIRROR_PAT: ${{ secrets.MIRROR_PAT }}
         run: |
-          # git filter-repo strips the origin remote as a safety feature so
-          # rewritten history can't accidentally push back to the source.
-          # Push directly to the URL instead of managing a remote — matches
-          # what scripts/publish.sh does. The PAT is masked in logs because
-          # MIRROR_PAT is a secret.
-          git push --mirror \
-            "https://x-access-token:${MIRROR_PAT}@github.com/jaterrell/audio-dl.git"
+          # Explicit refspecs (not --mirror) so internal feature branches
+          # never leak to public and non-v* tags stay private. Tag deletions
+          # are not propagated (releases are permanent). git filter-repo
+          # strips the origin remote so we push to the URL directly. PAT is
+          # masked in logs because MIRROR_PAT is a secret.
+          git push \
+            "https://x-access-token:${MIRROR_PAT}@github.com/jaterrell/audio-dl.git" \
+            +refs/heads/main:refs/heads/main \
+            '+refs/tags/v*:refs/tags/v*'
           echo
-          echo "✓ Public mirror updated"
+          echo "✓ Public main + v* tags updated"
           echo "  Note: GitHub Releases (notes, attached assets) are not git"
           echo "  objects and do not transfer with --mirror. Releases are"
           echo "  created by public's release.yml workflow on tag push, not"
