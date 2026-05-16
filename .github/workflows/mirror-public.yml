@@ -80,9 +80,13 @@ jobs:
         env:
           MIRROR_PAT: ${{ secrets.MIRROR_PAT }}
         run: |
-          git remote set-url origin \
+          # git filter-repo strips the origin remote as a safety feature so
+          # rewritten history can't accidentally push back to the source.
+          # Push directly to the URL instead of managing a remote — matches
+          # what scripts/publish.sh does. The PAT is masked in logs because
+          # MIRROR_PAT is a secret.
+          git push --mirror \
             "https://x-access-token:${MIRROR_PAT}@github.com/jaterrell/audio-dl.git"
-          git push --mirror origin
           echo
           echo "✓ Public mirror updated"
           echo "  Note: GitHub Releases (notes, attached assets) are not git"
