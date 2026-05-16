@@ -1,0 +1,91 @@
+name: Mirror to public
+
+# Auto-mirror this private repo to the public one with .claude/ and
+# CLAUDE.md filtered out of history. Runs on every push to main and on
+# any v* tag — matches the behavior of scripts/publish.sh, which stays
+# available as the manual fallback.
+#
+# Setup (one-time):
+#   1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
+#      - Repository access: only jaterrell/audio-dl (public)
+#      - Permissions: Contents = Read and write
+#      - Expiration: 1 year (rotate before then)
+#   2. Add it to this repo as a secret named MIRROR_PAT:
+#        gh secret set MIRROR_PAT --repo jaterrell/audio-dl-internal
+#
+# Recovery:
+#   - On failure, the workflow keeps no state. Re-run via workflow_dispatch
+#     (Actions tab → Mirror to public → Run workflow).
+#   - If a force-push to public corrupts things, scripts/publish.sh from a
+#     local machine is the manual fallback.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why running manually (e.g., recover from earlier failure)'
+        required: false
+        default: 'Manual mirror'
+
+jobs:
+  mirror:
+    # Same file is mirrored to public — this guard makes it no-op there.
+    if: github.repository == 'jaterrell/audio-dl-internal'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # for cloning internal via GITHUB_TOKEN
+    steps:
+      - name: Install git-filter-repo
+        run: pip install git-filter-repo
+
+      - name: Clone internal repo (bare, full history)
+        run: |
+          git clone --bare \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            repo.git
+
+      - name: Filter history — strip .claude/ and CLAUDE.md
+        working-directory: repo.git
+        run: git filter-repo --invert-paths --path .claude --path CLAUDE.md --force
+
+      - name: Show filtered head + tags (sanity check)
+        working-directory: repo.git
+        run: |
+          echo "→ Filtered head:"
+          git log --oneline -10
+          echo
+          echo "→ Filtered tags:"
+          git tag --list | sort -V
+
+      - name: Verify MIRROR_PAT secret is present
+        env:
+          MIRROR_PAT: ${{ secrets.MIRROR_PAT }}
+        run: |
+          if [ -z "$MIRROR_PAT" ]; then
+            echo "::error::MIRROR_PAT secret not set on this repo." >&2
+            echo "Setup:" >&2
+            echo "  1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta" >&2
+            echo "     - Repository access: only jaterrell/audio-dl" >&2
+            echo "     - Permissions: Contents = Read and write" >&2
+            echo "  2. gh secret set MIRROR_PAT --repo ${{ github.repository }}" >&2
+            exit 1
+          fi
+          echo "✓ MIRROR_PAT secret present"
+
+      - name: Force-push --mirror to public
+        working-directory: repo.git
+        env:
+          MIRROR_PAT: ${{ secrets.MIRROR_PAT }}
+        run: |
+          git remote set-url origin \
+            "https://x-access-token:${MIRROR_PAT}@github.com/jaterrell/audio-dl.git"
+          git push --mirror origin
+          echo
+          echo "✓ Public mirror updated"
+          echo "  Note: GitHub Releases (notes, attached assets) are not git"
+          echo "  objects and do not transfer with --mirror. Releases are"
+          echo "  created by public's release.yml workflow on tag push, not"
+          echo "  by this mirror."
