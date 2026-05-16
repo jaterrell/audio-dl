@@ -729,20 +729,131 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     --bg: #0a0600;     --fg: #ffb000;     --frame: #4a3000;  --label: #8a5a00;
     --accent: #ffb000; --ok: #ffb000;     --err: #ff4500;    --warn: #ff8800;
     --live: #ff8800;   --dim: #4a3000;    --bar: #ff8800;    --btn-fg: #0a0600;
-    --glow: 0 0 6px var(--accent);
+    --glow: none;
+    /* Structural: Amber CRT — vintage Tektronix phosphor */
+    --line-height: 1.65;
+    --title-weight: 600;
+    --title-letterspacing: 0.15em;
+    --title-transform: uppercase;
+    --frame-rule-style: dotted;
+    --pane-padding: 0.7em 1em;
+    --section-divider: ' · · ';
   }
+  /* Amber CRT: wider letter-spacing, dotted borders, uppercase titles, warm fuzz */
+  [data-theme="amber"] body { letter-spacing: 0.05em; }
+  [data-theme="amber"] .frame .frame-fill {
+    border-bottom-style: dotted;
+    border-bottom-color: var(--frame);
+  }
+  [data-theme="amber"] #status-bar { border-bottom-style: dotted; }
+  [data-theme="amber"] #keybar { border-top-style: dotted; }
+  [data-theme="amber"] .frame .panel-title {
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    font-weight: 600;
+  }
+  [data-theme="amber"] .frame .title {
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    font-weight: 600;
+    text-shadow: 0 0 1px #ffb000;
+  }
+  [data-theme="amber"] #status-bar .sb-app {
+    letter-spacing: 0.08em;
+    text-shadow: 0 0 1px #ffb000;
+  }
+  [data-theme="amber"] .label { letter-spacing: 0.05em; }
+  [data-theme="amber"] .body-section { line-height: 1.65; }
   :root[data-theme="solarized"] {
     --bg: #002b36;     --fg: #93a1a1;     --frame: #073642;  --label: #586e75;
     --accent: #b58900; --ok: #859900;     --err: #dc322f;    --warn: #cb4b16;
     --live: #2aa198;   --dim: #586e75;    --bar: #268bd2;    --btn-fg: #002b36;
-    --glow: 0 0 6px var(--accent);
+    --glow: none;
+    /* Structural: Solarized Dark — scholarly, compact, tabular */
+    --line-height: 1.4;
+    --title-weight: 400;
+    --title-letterspacing: 0.01em;
+    --title-transform: capitalize;
+    --frame-rule-color: var(--bar);
+    --pane-padding: 0.45em 0.8em;
+    --pane-gap: 0.5em;
+    --section-divider: ' / ';
+  }
+  /* Solarized: compact/tabular, pine-blue frame rules, capitalized titles */
+  [data-theme="solarized"] body {
+    font-feature-settings: "tnum" 1;
+    font-variant-numeric: tabular-nums;
+  }
+  [data-theme="solarized"] .frame .frame-fill {
+    border-bottom-color: #268bd2;
+  }
+  [data-theme="solarized"] #status-bar {
+    border-bottom-color: #268bd2;
+  }
+  [data-theme="solarized"] #keybar {
+    border-top-color: #268bd2;
+  }
+  [data-theme="solarized"] .frame .panel-title {
+    text-transform: capitalize;
+    letter-spacing: 0.01em;
+    font-weight: 400;
+  }
+  [data-theme="solarized"] .frame .title {
+    text-transform: capitalize;
+    font-weight: 400;
+  }
+  [data-theme="solarized"] .body-section {
+    line-height: 1.4;
+    padding-left: 0.8ch;
+  }
+  [data-theme="solarized"] .stats-val,
+  [data-theme="solarized"] #sb-clock {
+    font-feature-settings: "tnum" 1;
+    font-variant-numeric: tabular-nums;
   }
   :root[data-theme="gruvbox"] {
     --bg: #282828;     --fg: #ebdbb2;     --frame: #504945;  --label: #928374;
     --accent: #fabd2f; --ok: #b8bb26;     --err: #fb4934;    --warn: #fe8019;
     --live: #8ec07c;   --dim: #665c54;    --bar: #83a598;    --btn-fg: #282828;
-    --glow: 0 0 6px var(--accent);
+    --glow: none;
+    /* Structural: Gruvbox Dark — brutalist warm retro */
+    --line-height: 1.45;
+    --title-weight: 700;
+    --title-letterspacing: 0.08em;
+    --title-transform: uppercase;
+    --frame-rule-width: 2px;
+    --frame-rule-color: var(--accent);
+    --pane-padding: 0.5em 1.1em;
+    --section-divider: ' :: ';
   }
+  /* Gruvbox: thick borders, bold uppercase titles, condensed, matte painted */
+  [data-theme="gruvbox"] .frame .frame-fill {
+    border-bottom-width: 2px;
+    border-bottom-color: var(--accent);
+  }
+  [data-theme="gruvbox"] #status-bar {
+    border-bottom-width: 2px;
+    border-bottom-color: var(--accent);
+  }
+  [data-theme="gruvbox"] #keybar {
+    border-top-width: 2px;
+    border-top-color: var(--accent);
+  }
+  [data-theme="gruvbox"] .frame .panel-title {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+  [data-theme="gruvbox"] .frame .title {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 700;
+  }
+  [data-theme="gruvbox"] #status-bar .sb-app {
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  [data-theme="gruvbox"] .body-section { line-height: 1.45; }
   :root[data-theme="tokyo"] {
     --bg: #1a1b26;     --fg: #c0caf5;     --frame: #565f89;  --label: #565f89;
     --accent: #bb9af7; --ok: #9ece6a;     --err: #f7768e;    --warn: #e0af68;
