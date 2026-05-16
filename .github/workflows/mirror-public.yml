@@ -9,6 +9,10 @@ name: Mirror to public
 #   1. Create a fine-grained PAT at https://github.com/settings/tokens?type=beta
 #      - Repository access: only jaterrell/audio-dl (public)
 #      - Permissions: Contents = Read and write
+#                     Workflows = Read and write  (required: --mirror pushes
+#                                                  .github/workflows/* and
+#                                                  GitHub blocks workflow
+#                                                  changes without this scope)
 #      - Expiration: 1 year (rotate before then)
 #   2. Add it to this repo as a secret named MIRROR_PAT:
 #        gh secret set MIRROR_PAT --repo jaterrell/audio-dl-internal
