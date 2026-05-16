@@ -380,8 +380,8 @@ _INDEX_TEMPLATE = """<!doctype html>
 
 _INDEX_CSS_BASE = """  :root {
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'Cascadia Code', monospace;
-    font-size: 15px;
-    line-height: 1.5;
+    font-size: 14px;
+    line-height: 1.35;
   }
   *, *::before, *::after { box-sizing: border-box; }
   html, body {
@@ -391,8 +391,50 @@ _INDEX_CSS_BASE = """  :root {
   }
   body {
     display: flex; flex-direction: column;
-    padding: 0.5rem 1rem 0.5rem;
+    padding: 0;
     min-height: 100vh;
+    gap: 0;
+  }
+  /* ── Status bar (top) ── */
+  #status-bar {
+    display: flex; align-items: center; gap: 0;
+    background: var(--bg); color: var(--dim);
+    border-bottom: 1px solid var(--frame);
+    padding: 0 1ch; height: 1.6em; flex-shrink: 0;
+    white-space: nowrap; overflow: hidden; font-size: 13px;
+  }
+  #status-bar .sb-app { color: var(--accent); font-weight: 600; margin-right: 1.5ch; }
+  #status-bar .sb-sep { color: var(--frame); margin: 0 1ch; }
+  #status-bar .sb-fill { flex: 1; }
+  #status-bar .sb-ver { color: var(--dim); }
+  #status-indicator { color: var(--dim); }
+  #status-indicator.active { color: var(--live); }
+  #status-indicator.done { color: var(--ok); }
+  #status-indicator.failed { color: var(--err); }
+  @media (max-width: 600px) {
+    #status-bar .sb-meta { display: none; }
+  }
+  /* ── Footer keybar (bottom) ── */
+  #keybar {
+    display: flex; align-items: center; gap: 0;
+    background: var(--bg); color: var(--dim);
+    border-top: 1px solid var(--frame);
+    padding: 0 1ch; height: 1.6em; flex-shrink: 0;
+    white-space: nowrap; overflow: hidden; font-size: 12px;
+  }
+  #keybar .kb-item { display: flex; align-items: center; margin-right: 1.5ch; }
+  #keybar .kb-key { color: var(--dim); }
+  #keybar .kb-key .kb-bracket { color: var(--frame); }
+  #keybar .kb-key .kb-chord { color: var(--label); }
+  #keybar .kb-action { color: var(--fg); margin-left: 0.5ch; }
+  @media (max-width: 600px) {
+    #keybar .kb-item:nth-child(n+4) { display: none; }
+  }
+  /* ── Main content area between status bar and keybar ── */
+  #main-content {
+    display: flex; flex-direction: column;
+    flex: 1; min-height: 0;
+    padding: 0.4rem 1ch;
     gap: 0;
   }
   /* ── Frame rows: flex-based so the ─ fills span full viewport width ── */
@@ -408,11 +450,17 @@ _INDEX_CSS_BASE = """  :root {
     margin-bottom: 0.35em;
     min-width: 1ch;
   }
+  .frame .panel-title {
+    color: var(--label); font-size: 12px; letter-spacing: 0.06em;
+    flex-shrink: 0;
+  }
+  .frame .panel-title .pt-bracket { color: var(--frame); }
+  .frame .panel-title .pt-label { color: var(--accent); }
   .frame .title { color: var(--accent); font-weight: 400; }
   .frame .theme-btn {
     color: var(--accent); background: rgba(255,255,255,0.04);
     padding: 0 6px; cursor: pointer; user-select: none;
-    flex-shrink: 0;
+    flex-shrink: 0; font-size: 12px;
   }
   .frame .theme-btn:hover { background: rgba(255,255,255,0.08); }
   .frame .frame-seg { flex-shrink: 0; color: var(--frame); }
@@ -430,9 +478,11 @@ _INDEX_CSS_BASE = """  :root {
       align-items: start;
     }
   }
+  /* ── Panel containers (each with their own border box) ── */
+  .panel { display: flex; flex-direction: column; }
   /* ── Form panel ── */
-  .body-section { padding-left: 1ch; margin: 2px 0; }
-  .body-section .field-line { display: flex; align-items: baseline; gap: 4px; }
+  .body-section { padding-left: 1ch; margin: 1px 0; }
+  .body-section .field-line { display: flex; align-items: baseline; gap: 4px; padding: 1px 0; }
   .label { color: var(--label); display: inline-block; min-width: 10ch; }
   .marker { color: var(--accent); }
   .accent { color: var(--accent); }
@@ -446,39 +496,39 @@ _INDEX_CSS_BASE = """  :root {
     background: transparent; color: var(--fg); border: 0; padding: 0;
     font: inherit; outline: 0; flex: 1;
   }
-  textarea.field { resize: none; height: 9rem; width: 100%; }
+  textarea.field { resize: none; height: 7.5rem; width: 100%; }
   select.field { cursor: pointer; }
   input[type=range].slider {
     appearance: none; -webkit-appearance: none;
-    height: 6px; background: var(--frame); border-radius: 3px; outline: 0;
+    height: 5px; background: var(--frame); border-radius: 3px; outline: 0;
     flex: 1; max-width: 22ch;
   }
   input[type=range].slider::-webkit-slider-thumb {
     appearance: none; -webkit-appearance: none;
-    width: 13px; height: 13px; border-radius: 50%;
+    width: 12px; height: 12px; border-radius: 50%;
     background: var(--accent); cursor: pointer;
   }
   input[type=range].slider::-moz-range-thumb {
-    width: 13px; height: 13px; border-radius: 50%;
+    width: 12px; height: 12px; border-radius: 50%;
     background: var(--accent); cursor: pointer; border: 0;
   }
   button.tui-btn {
     color: var(--btn-fg); background: var(--accent);
-    border: 0; padding: 2px 14px; font: inherit; font-weight: 600;
+    border: 0; padding: 1px 12px; font: inherit; font-weight: 600;
     cursor: pointer;
   }
   button.tui-btn:hover { filter: brightness(1.1); }
   button.tui-btn:disabled { opacity: 0.4; cursor: default; }
   button.cancel-btn {
     background: transparent; color: var(--err);
-    border: 1px solid var(--frame); padding: 1px 8px;
-    font: inherit; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--frame); padding: 0 7px;
+    font: inherit; font-size: 11px; cursor: pointer;
   }
   /* ── Job panel ── */
   #jobpanel { min-height: 0; }
   #jobpanel[hidden] { display: none; }
-  .summary { color: var(--dim); }
-  .jobpanel-empty { color: var(--dim); padding-left: 1ch; font-style: italic; }
+  .summary { color: var(--dim); font-size: 12px; }
+  .jobpanel-empty { color: var(--dim); padding-left: 1ch; font-style: italic; font-size: 12px; }
   .live-pulse { animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse {
     0%, 100% { opacity: 1; }
@@ -486,14 +536,44 @@ _INDEX_CSS_BASE = """  :root {
   }
   @media (prefers-reduced-motion: reduce) {
     .live-pulse { animation: none; }
+    #status-indicator.spinning { animation: none; }
   }
-  .url-row { padding: 3px 0; }
-  .url-row .url { color: var(--fg); word-break: break-all; }
+  /* ── URL rows: grid for columnar alignment ── */
+  .url-row {
+    display: grid;
+    grid-template-columns: 6ch minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 0 1ch;
+    padding: 1px 0;
+    font-size: 13px;
+  }
+  .url-row .col-glyph { flex-shrink: 0; }
+  .url-row .col-url { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .url-row .col-right {
+    display: flex; align-items: baseline; gap: 1ch;
+    justify-content: flex-end; white-space: nowrap; font-size: 12px;
+  }
+  .url-row .result-arrow { color: var(--frame); }
+  .url-row .result-name { color: var(--accent); overflow: hidden; text-overflow: ellipsis; max-width: 30ch; }
   .url-row .reveal-btn {
     background: transparent; color: var(--accent);
-    border: 1px solid var(--frame); padding: 0 6px;
-    font: inherit; font-size: 12px; cursor: pointer; margin-left: 8px;
+    border: 1px solid var(--frame); padding: 0 5px;
+    font: inherit; font-size: 11px; cursor: pointer;
   }
+  /* ── Stats subpanel inside OUTPUT panel ── */
+  #stats-panel {
+    padding-left: 1ch; padding-top: 2px; padding-bottom: 2px;
+    font-size: 12px; color: var(--dim);
+    border-left: 1px solid var(--frame);
+    margin: 2px 0 4px 0;
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .stats-row { display: flex; gap: 1ch; }
+  .stats-label { color: var(--label); min-width: 9ch; }
+  .stats-val { color: var(--fg); min-width: 3ch; text-align: right; }
+  .stats-val.active { color: var(--live); }
+  .stats-val.done { color: var(--ok); }
+  .stats-val.failed { color: var(--err); }
   /* ── Right-pane frame separator on wide screens ── */
   @media (min-width: 1200px) {
     #jobpanel[hidden] { display: block; }
@@ -503,10 +583,10 @@ _INDEX_CSS_BASE = """  :root {
   /* ── Popover ── */
   #theme-popover[hidden] { display: none; }
   #theme-popover {
-    position: fixed; top: 3rem; right: 1.5rem; width: 380px;
+    position: fixed; top: 2.2rem; right: 1rem; width: 380px;
     background: var(--bg); color: var(--fg);
     border: 1px solid var(--frame);
-    padding: 14px; z-index: 100;
+    padding: 12px; z-index: 100;
     box-shadow: 0 8px 32px rgba(0,0,0,0.6);
     font-size: 12px;
   }
@@ -514,11 +594,11 @@ _INDEX_CSS_BASE = """  :root {
     color: var(--accent); font-weight: 600; margin-bottom: 4px;
     display: flex; justify-content: space-between; align-items: center;
   }
-  #theme-popover .pop-sub { color: var(--dim); font-size: 11px; margin-bottom: 12px; }
+  #theme-popover .pop-sub { color: var(--dim); font-size: 11px; margin-bottom: 10px; }
   #theme-popover input.pop-search {
     background: var(--bg); border: 1px solid var(--frame);
-    padding: 5px 8px; color: var(--fg); font: inherit;
-    width: 100%; box-sizing: border-box; margin-bottom: 12px; outline: 0;
+    padding: 4px 8px; color: var(--fg); font: inherit;
+    width: 100%; box-sizing: border-box; margin-bottom: 10px; outline: 0;
   }
   #theme-popover input.pop-search:focus { border-color: var(--accent); }
   #theme-popover .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -531,10 +611,10 @@ _INDEX_CSS_BASE = """  :root {
   #theme-popover .thumb.active { border-color: var(--accent); }
   #theme-popover .thumb:focus { outline: 0; border-color: var(--accent); }
   #theme-popover .thumb .preview {
-    padding: 6px 8px; font-size: 9px; line-height: 1.3; min-height: 48px;
+    padding: 5px 7px; font-size: 9px; line-height: 1.3; min-height: 44px;
   }
   #theme-popover .thumb .name {
-    background: rgba(0,0,0,0.4); padding: 4px 8px; font-size: 10px;
+    background: rgba(0,0,0,0.4); padding: 3px 7px; font-size: 10px;
     color: var(--fg); display: flex; justify-content: space-between;
   }
   @media (max-width: 480px) {
@@ -594,27 +674,59 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
   }
 """
 
-_INDEX_HTML_BODY = """<div class="frame"><span class="frame-corner">┌─</span> <span class="title">audio-dl</span> <span class="dim">── v__VERSION__ ──</span><span class="frame-fill"></span><span class="theme-btn" id="theme-btn">theme: <span id="theme-current">phosphor</span> ▾</span><span class="frame-fill"></span><span class="frame-corner">─┐</span></div>
-<div class="panes">
-<form id="dl">
-  <div class="body-section">
-    <div class="field-line"><span class="label">urls</span><span class="marker">▸</span> <textarea class="field" id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea></div>
-    <div class="field-line"><span class="label">format</span><span class="marker">▸</span> <select class="field" id="format" name="format" style="max-width:18ch;">__FORMAT_OPTIONS__</select></div>
-    <div class="field-line"><span class="label">output</span><span class="marker">▸</span> <input class="field" id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required></div>
-    <div class="field-line"><span class="label">jobs</span><span class="marker">▸</span> <input class="slider" id="jobs" name="jobs" type="range" min="1" max="8" value="1"> <span id="jobs_val" class="dim">1</span></div>
-    <div class="field-line"><span class="label">fragments</span><span class="marker">▸</span> <input class="slider" id="fragments" name="fragments" type="range" min="1" max="16" value="4"> <span id="fragments_val" class="dim">4</span></div>
-    <div class="field-line"><span class="label">flags</span><span class="marker">▸</span> <label style="margin-right:12px;"><input type="checkbox" id="playlist" name="playlist"> playlist</label> <label><input type="checkbox" id="force" name="force"> overwrite</label></div>
-    <div class="field-line" style="margin-top:8px;"><span class="label"></span><button type="submit" class="tui-btn" id="submit">[ download ]</button> <span class="dim">⌘↵</span></div>
-  </div>
-</form>
-
-<section id="jobpanel" hidden>
-  <div class="frame"><span class="frame-corner">├─</span> <span class="accent">job</span> <span class="dim">─</span> <span class="summary" id="job-summary">0 done · 0 active · 0 fail</span> <span class="frame-fill"></span><button type="button" class="cancel-btn" id="cancel">esc</button> <span class="frame-corner">┤</span></div>
-  <div class="body-section" id="rows"></div>
-</section>
+_INDEX_HTML_BODY = """<div id="status-bar">
+  <span class="sb-app">audio-dl</span>
+  <span id="status-indicator">◌ idle</span>
+  <span class="sb-sep sb-meta">·</span>
+  <span class="sb-meta" id="sb-meta-text"></span>
+  <span class="sb-fill"></span>
+  <span class="sb-ver dim">v__VERSION__</span>
 </div>
 
-<div class="frame"><span class="frame-corner">└</span><span class="frame-fill"></span><span class="frame-corner">┘</span></div>
+<div id="main-content">
+<div class="panes">
+
+<div class="panel">
+  <div class="frame"><span class="frame-corner">┌─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">INPUT</span><span class="pt-bracket"> ]</span></span><span class="frame-fill"></span><span class="theme-btn" id="theme-btn"><span class="pt-bracket">[ </span>theme: <span id="theme-current">phosphor</span> ▾<span class="pt-bracket"> ]</span></span><span class="frame-fill"></span><span class="frame-corner">─┐</span></div>
+  <form id="dl">
+    <div class="body-section">
+      <div class="field-line"><span class="label">urls</span><span class="marker">▸</span> <textarea class="field" id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea></div>
+      <div class="field-line"><span class="label">format</span><span class="marker">▸</span> <select class="field" id="format" name="format" style="max-width:18ch;">__FORMAT_OPTIONS__</select></div>
+      <div class="field-line"><span class="label">output</span><span class="marker">▸</span> <input class="field" id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required></div>
+      <div class="field-line"><span class="label">jobs</span><span class="marker">▸</span> <input class="slider" id="jobs" name="jobs" type="range" min="1" max="8" value="1"> <span id="jobs_val" class="dim">1</span></div>
+      <div class="field-line"><span class="label">fragments</span><span class="marker">▸</span> <input class="slider" id="fragments" name="fragments" type="range" min="1" max="16" value="4"> <span id="fragments_val" class="dim">4</span></div>
+      <div class="field-line"><span class="label">flags</span><span class="marker">▸</span> <label style="margin-right:12px;"><input type="checkbox" id="playlist" name="playlist"> playlist</label> <label><input type="checkbox" id="force" name="force"> overwrite</label></div>
+      <div class="field-line" style="margin-top:6px;"><span class="label"></span><button type="submit" class="tui-btn" id="submit">[ download ]</button> <span class="dim">⌘↵</span></div>
+    </div>
+  </form>
+  <div class="frame"><span class="frame-corner">└</span><span class="frame-fill"></span><span class="frame-corner">┘</span></div>
+</div>
+
+<div class="panel">
+  <div class="frame"><span class="frame-corner">┌─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">OUTPUT</span><span class="pt-bracket"> ]</span></span><span class="frame-fill"></span><button type="button" class="cancel-btn" id="cancel" disabled>[ esc ] cancel</button><span class="frame-fill" style="max-width:1ch;"></span><span class="frame-corner">─┐</span></div>
+  <div id="stats-panel">
+    <div class="stats-row"><span class="stats-label">queued</span><span class="stats-val" id="stat-queued">0</span></div>
+    <div class="stats-row"><span class="stats-label">active</span><span class="stats-val active" id="stat-active">0</span></div>
+    <div class="stats-row"><span class="stats-label">done</span><span class="stats-val done" id="stat-done">0</span></div>
+    <div class="stats-row"><span class="stats-label">failed</span><span class="stats-val failed" id="stat-failed">0</span></div>
+  </div>
+  <section id="jobpanel" hidden>
+    <div class="frame"><span class="frame-corner">├─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">JOBS</span><span class="pt-bracket"> ]</span></span><span class="dim" style="margin-left:1ch;">─</span> <span class="summary" id="job-summary">0 done · 0 active · 0 fail</span><span class="frame-fill"></span><span class="frame-corner">┤</span></div>
+    <div class="body-section" id="rows"></div>
+  </section>
+  <div class="frame"><span class="frame-corner">└</span><span class="frame-fill"></span><span class="frame-corner">┘</span></div>
+</div>
+
+</div>
+</div>
+
+<div id="keybar">
+  <span class="kb-item"><span class="kb-key"><span class="kb-bracket">[</span> <span class="kb-chord">⌘↵</span> <span class="kb-bracket">]</span></span><span class="kb-action">download</span></span>
+  <span class="kb-item"><span class="kb-key"><span class="kb-bracket">[</span> <span class="kb-chord">esc</span> <span class="kb-bracket">]</span></span><span class="kb-action">cancel</span></span>
+  <span class="kb-item"><span class="kb-key"><span class="kb-bracket">[</span> <span class="kb-chord">⌘T</span> <span class="kb-bracket">]</span></span><span class="kb-action">theme</span></span>
+  <span class="kb-item"><span class="kb-key"><span class="kb-bracket">[</span> <span class="kb-chord">⌘K</span> <span class="kb-bracket">]</span></span><span class="kb-action">picker</span></span>
+  <span class="kb-item"><span class="kb-key"><span class="kb-bracket">[</span> <span class="kb-chord">⌘/</span> <span class="kb-bracket">]</span></span><span class="kb-action">help</span></span>
+</div>
 
 <div id="theme-popover" hidden role="dialog" aria-label="Switch theme">
   <div class="pop-header"><span>switch theme</span><span class="dim">⌘T to cycle</span></div>
@@ -653,10 +765,71 @@ _INDEX_JS = """const THEMES = [
   let es = null;
   const rows = $('rows');
   const summary = $('job-summary');
-  let counts = { done: 0, active: 0, fail: 0 };
+  let counts = { done: 0, active: 0, fail: 0, queued: 0 };
+
+  // ── Status indicator (top bar) ───────────────────────────────────────
+  const statusIndicator = $('status-indicator');
+  const sbMetaText = $('sb-meta-text');
+  const SPIN_FRAMES = ['◐', '◑', '◒', '◓', '◔', '◕'];
+  let spinInterval = null;
+  let spinFrame = 0;
+
+  function startSpinner() {
+    if (spinInterval) return;
+    spinFrame = 0;
+    spinInterval = setInterval(() => {
+      spinFrame = (spinFrame + 1) % SPIN_FRAMES.length;
+      const label = counts.active > 0
+        ? ` downloading ${counts.active} / ${counts.done + counts.active}`
+        : '';
+      statusIndicator.textContent = SPIN_FRAMES[spinFrame] + label;
+    }, 180);
+  }
+
+  function stopSpinner() {
+    if (spinInterval) { clearInterval(spinInterval); spinInterval = null; }
+  }
+
+  function updateStatusIndicator() {
+    const { done, active, fail, queued } = counts;
+    const total = done + active + fail + queued;
+    stopSpinner();
+    if (active > 0) {
+      statusIndicator.className = 'active';
+      startSpinner();
+    } else if (total > 0 && active === 0 && queued === 0) {
+      if (fail > 0 && done === 0) {
+        statusIndicator.className = 'failed';
+        statusIndicator.textContent = `! ${fail} failed`;
+      } else if (fail > 0) {
+        statusIndicator.className = 'failed';
+        statusIndicator.textContent = `! ${done} done · ${fail} failed`;
+      } else {
+        statusIndicator.className = 'done';
+        statusIndicator.textContent = `✓ ${done} done`;
+      }
+    } else {
+      statusIndicator.className = '';
+      statusIndicator.textContent = '◌ idle';
+    }
+  }
+
+  function updateStatsMeta() {
+    const { done, active, fail } = counts;
+    const theme = document.documentElement.dataset.theme || 'phosphor';
+    const jobs = $('jobs') ? $('jobs').value : '1';
+    const frags = $('fragments') ? $('fragments').value : '4';
+    sbMetaText.textContent = `${jobs} jobs · ${frags} frags · ${theme}`;
+    $('stat-queued').textContent = String(counts.queued);
+    $('stat-active').textContent = String(active);
+    $('stat-done').textContent = String(done);
+    $('stat-failed').textContent = String(fail);
+  }
 
   function refreshSummary() {
     summary.textContent = `${counts.done} done · ${counts.active} active · ${counts.fail} fail`;
+    updateStatusIndicator();
+    updateStatsMeta();
   }
 
   function rowFor(url) {
@@ -666,8 +839,8 @@ _INDEX_JS = """const THEMES = [
     row = document.createElement('div');
     row.className = 'url-row';
     row.id = id;
-    // Format: [GLYPH] <url>  <progress>  <reveal-btn>
-    row.innerHTML = `<span class="glyph dim">[--]</span> <span class="url">${escapeHtml(url)}</span> <span class="progress dim"></span><span class="files"></span>`;
+    // Columnar grid: [GLYPH] | <url> | <right-col>
+    row.innerHTML = `<span class="col-glyph glyph dim">[--]</span><span class="col-url url">${escapeHtml(url)}</span><span class="col-right"><span class="progress dim">queued</span></span>`;
     rows.appendChild(row);
     return row;
   }
@@ -681,7 +854,7 @@ _INDEX_JS = """const THEMES = [
   function setGlyph(row, glyph, cls, pulse) {
     const g = row.querySelector('.glyph');
     g.textContent = glyph;
-    g.className = 'glyph ' + cls + (pulse ? ' live-pulse' : '');
+    g.className = 'col-glyph glyph ' + cls + (pulse ? ' live-pulse' : '');
     // Track the row's last-known status class so handlers can avoid
     // double-counting transitions (e.g., url_failed for a row that
     // was never `active` because cancel hit before url_started).
@@ -689,23 +862,21 @@ _INDEX_JS = """const THEMES = [
   }
 
   function setProgress(row, pct, extras) {
-    const p = row.querySelector('.progress');
+    const right = row.querySelector('.col-right');
     if (pct == null) {
-      p.textContent = extras || '';
-      p.className = 'progress dim';
+      right.innerHTML = `<span class="progress dim">${escapeHtml(extras || '')}</span>`;
       return;
     }
-    // Clamp filled to [0, 18] — yt-dlp can report pct > 100 for
+    // Clamp filled to [0, 14] — yt-dlp can report pct > 100 for
     // fragmented downloads with estimated totals, which would make
-    // (18 - filled) negative and crash String.repeat() with RangeError.
-    const filled = Math.max(0, Math.min(18, Math.round(pct / 100 * 18)));
-    const bar = '▓'.repeat(filled) + '░'.repeat(18 - filled);
+    // (14 - filled) negative and crash String.repeat() with RangeError.
+    const filled = Math.max(0, Math.min(14, Math.round(pct / 100 * 14)));
+    const bar = '▓'.repeat(filled) + '░'.repeat(14 - filled);
     // bar uses only ▓/░ (HTML-safe). Escape `extras` since it can come
     // from progressExtras() today but might carry user-controlled text
     // (filenames, error strings) in future callers.
     const extrasHtml = extras ? ` <span class="dim">${escapeHtml(extras)}</span>` : '';
-    p.innerHTML = `<span class="bar-graph">${bar}</span> <span class="live">${pct.toFixed(1)}%</span>${extrasHtml}`;
-    p.className = 'progress';
+    right.innerHTML = `<span class="progress"><span class="bar-graph">${bar}</span> <span class="live">${pct.toFixed(1)}%</span>${extrasHtml}</span>`;
   }
 
   function fmtBytes(b) {
@@ -728,20 +899,21 @@ _INDEX_JS = """const THEMES = [
   }
 
   function addRevealButton(row, paths) {
-    const filesDiv = row.querySelector('.files');
-    filesDiv.innerHTML = '';
+    const right = row.querySelector('.col-right');
     const name = paths[0].split('/').pop();
-    const label = paths.length === 1 ? `↗ ${name}` : `↗ ${paths.length} files`;
+    const dispName = paths.length === 1 ? name : `${paths.length} files`;
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'reveal-btn';
-    btn.textContent = label;
+    btn.textContent = '↗';
+    btn.title = 'Reveal in Finder';
     btn.onclick = () => fetch('/reveal', {
       method: 'POST',
       headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
       body: JSON.stringify({path: paths[0]})
     });
-    filesDiv.appendChild(btn);
+    right.innerHTML = `<span class="result-arrow">─►</span><span class="result-name">${escapeHtml(dispName)}</span>`;
+    right.appendChild(btn);
   }
 
   function applyUrlState(row, u) {
@@ -753,8 +925,8 @@ _INDEX_JS = """const THEMES = [
       setProgress(row, u.percent, progressExtras(u.speed, u.eta));
     } else if (u.status === 'completed') {
       setGlyph(row, '[OK]', 'ok');
-      setProgress(row, 100, '');
       if (u.paths && u.paths.length) addRevealButton(row, u.paths);
+      else setProgress(row, 100, '');
     } else if (u.status === 'failed') {
       setGlyph(row, '[!!]', 'err');
       setProgress(row, null, u.error || 'failed');
@@ -770,12 +942,13 @@ _INDEX_JS = """const THEMES = [
   // states overlap with queued live events from the same connection window
   // (the SSE broadcast can deliver both for the same URL).
   function recountFromDOM() {
-    const next = { done: 0, active: 0, fail: 0 };
+    const next = { done: 0, active: 0, fail: 0, queued: 0 };
     rows.querySelectorAll('.url-row').forEach(row => {
       const s = row.dataset.status;
       if (s === 'ok') next.done++;
       else if (s === 'live') next.active++;
       else if (s === 'err') next.fail++;
+      else next.queued++;
     });
     counts = next;
     refreshSummary();
@@ -791,6 +964,9 @@ _INDEX_JS = """const THEMES = [
       if (ev.complete) {
         $('submit').disabled = false;
         $('cancel').disabled = true;
+        stopSpinner();
+        // recountFromDOM already called above; updateStatusIndicator() runs
+        // via refreshSummary() inside it, reflecting the completed state.
       }
     } else if (ev.type === 'url_started') {
       const row = rowFor(ev.url);
@@ -804,7 +980,6 @@ _INDEX_JS = """const THEMES = [
     } else if (ev.type === 'url_completed') {
       const row = rowFor(ev.url);
       setGlyph(row, '[OK]', 'ok');
-      setProgress(row, 100, '');
       addRevealButton(row, ev.paths);
       recountFromDOM();
     } else if (ev.type === 'url_failed') {
@@ -819,15 +994,26 @@ _INDEX_JS = """const THEMES = [
       es && es.close();
       es = null;
       currentJobId = null;
+      stopSpinner();
+      // Re-derive counts from DOM so the indicator reflects final state.
+      recountFromDOM();
     }
   }
+
+  // Update status bar meta text when sliders change.
+  ['jobs', 'fragments'].forEach(id => {
+    $(id).addEventListener('input', updateStatsMeta);
+  });
+  // Initial meta text render.
+  updateStatsMeta();
 
   $('dl').addEventListener('submit', async (e) => {
     e.preventDefault();
     $('submit').disabled = true;
     $('cancel').disabled = false;
     rows.innerHTML = '';
-    counts = { done: 0, active: 0, fail: 0 };
+    stopSpinner();
+    counts = { done: 0, active: 0, fail: 0, queued: 0 };
     refreshSummary();
     $('jobpanel').hidden = false;
 
@@ -879,13 +1065,14 @@ _INDEX_JS = """const THEMES = [
     }
   });
 
-  // Reflect the active theme in the header button.
+  // Reflect the active theme in the header button and status bar meta.
   function refreshThemeLabel() {
     const cur = document.documentElement.dataset.theme || 'phosphor';
     $('theme-current').textContent = cur;
+    updateStatsMeta();
   }
   refreshThemeLabel();
-  window.refreshThemeLabel = refreshThemeLabel;  // Picker (Task 6) calls this on change.
+  window.refreshThemeLabel = refreshThemeLabel;  // Picker calls this on change.
 
   // ── Theme picker popover ────────────────────────────────────────────
   const popover = $('theme-popover');
