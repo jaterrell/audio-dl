@@ -17,13 +17,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import html
 import json
 import os
 import queue
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -32,8 +35,9 @@ from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel
 
 from audio_dl import (
@@ -74,6 +78,19 @@ class UrlState:  # pylint: disable=too-many-instance-attributes
     paths: list[str] = field(default_factory=list)
     error: str | None = None
     last_progress_emit: float = 0.0
+    # v1.6 — rich card fields
+    title: str | None = None
+    uploader: str | None = None
+    duration: int | None = None
+    thumbnail_ready: bool = False
+    phase: str | None = None
+    log: "collections.deque[dict]" = field(
+        default_factory=lambda: collections.deque(maxlen=50)
+    )
+    # Tracks whether url_metadata has already been emitted (so we don't
+    # re-emit on every hook tick — only on first info-dict and on
+    # thumb-fetched).
+    metadata_emitted: bool = False
 
 
 @dataclass
@@ -155,6 +172,166 @@ def _put_with_overflow(q: "queue.Queue[dict]", event: dict) -> None:
             pass  # drop excess progress
 
 
+_LOG_KEEP_PREFIXES = (
+    "[hls] downloading fragment",
+    "[ffmpeg]",
+    "[ExtractAudio]",
+    "[EmbedThumbnail]",
+    "[Metadata]",
+)
+
+
+def _should_keep_log(level: str, text: str) -> bool:
+    """Filter yt-dlp log lines down to ones worth showing the user."""
+    if level in ("warning", "error"):
+        return True
+    if level == "debug":
+        return False
+    # level == "info" (or anything else): keep only known phase markers
+    return any(text.startswith(p) for p in _LOG_KEEP_PREFIXES)
+
+
+def _pick_thumbnail_url(info: dict) -> str | None:
+    """Pick a reasonable thumbnail URL from a yt-dlp info dict.
+
+    Prefers the largest thumbnail with width <= 480 (good for our 120px
+    card thumbs without retina-blur). Falls back to the smallest width
+    if none are <= 480, then the singular ``thumbnail`` field, then None.
+    """
+    thumbs = info.get("thumbnails") or []
+    sized = [t for t in thumbs if isinstance(t.get("width"), int)]
+    if sized:
+        small = [t for t in sized if t["width"] <= 480]
+        if small:
+            chosen = max(small, key=lambda t: t["width"])
+        else:
+            chosen = min(sized, key=lambda t: t["width"])
+        return chosen.get("url")
+    if thumbs:
+        return thumbs[0].get("url")
+    return info.get("thumbnail") or None
+
+
+_THUMB_ROOT = os.path.join(tempfile.gettempdir(), "audio-dl-thumbs")
+
+
+def _thumb_dir(job_id: str) -> str:
+    return os.path.join(_THUMB_ROOT, job_id)
+
+
+def _cleanup_thumb_dir(job: "JobState") -> None:
+    """Remove the job's thumb dir AND clear thumbnail_ready flags so any
+    post-cleanup snapshot accurately reports the thumbs are gone.
+
+    Idempotent and never raises.
+    """
+    path = _thumb_dir(job.id)
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:  # pylint: disable=broad-except
+        pass
+    # Clear flags so a late-connecting subscriber sees thumbnail_ready=False
+    for st in job.url_states.values():
+        st.thumbnail_ready = False
+
+
+def _url_idx(job: "JobState", raw_url: str) -> int:
+    """0-based position of the URL within the job's submission order."""
+    for i, u in enumerate(job.url_states.keys()):
+        if u == raw_url:
+            return i
+    return -1
+
+
+_THUMB_MAX_BYTES = 5 * 1024 * 1024  # 5MB cap; real thumbs are <100KB
+
+
+def _fetch_thumbnail(job_id: str, url_idx: int, src_url: str) -> bool:
+    """Stream a thumbnail to {THUMB_ROOT}/{job_id}/{url_idx}.jpg.
+
+    Returns True on success, False on any failure (timeout, non-200,
+    write error, exceeds size cap). No retries. Never raises.
+    """
+    try:
+        target_dir = _thumb_dir(job_id)
+        os.makedirs(target_dir, exist_ok=True)
+        target = os.path.join(target_dir, f"{url_idx}.jpg")
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".thumb-", suffix=".tmp")
+        try:
+            with httpx.stream(
+                "GET", src_url, timeout=5.0, follow_redirects=True
+            ) as resp:
+                if resp.status_code != 200:
+                    raise IOError("non-200")
+                total = 0
+                with os.fdopen(tmp_fd, "wb") as f:
+                    for chunk in resp.iter_bytes():
+                        total += len(chunk)
+                        if total > _THUMB_MAX_BYTES:
+                            raise IOError("exceeded size cap")
+                        f.write(chunk)
+            os.replace(tmp_path, target)
+            return True
+        except Exception:  # pylint: disable=broad-except
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return False
+    except Exception:  # pylint: disable=broad-except
+        return False
+
+
+class _YDLLogger:
+    """yt-dlp-compatible logger that routes filtered lines into a URL's
+    state deque and broadcasts each kept line as a ``url_log`` SSE event.
+
+    yt-dlp invokes ``.debug``, ``.info``, ``.warning``, ``.error`` with
+    a single string (sometimes an exception). We coerce, filter, append,
+    emit. Never raises — a logger that crashes would break the download.
+    """
+    # pylint: disable=missing-function-docstring
+
+    def __init__(self, job: "JobState", url_state: "UrlState") -> None:
+        self._job = job
+        self._url_state = url_state
+
+    def _route(self, level: str, msg) -> None:
+        try:
+            text = str(msg)
+        except Exception:  # pylint: disable=broad-except
+            text = repr(msg)
+        if not _should_keep_log(level, text):
+            return
+        entry = {"ts": time.time(), "level": level, "text": text}
+        self._url_state.log.append(entry)
+        _emit(self._job, {
+            "type": "url_log",
+            "job_id": self._job.id,
+            "url": self._url_state.url,
+            "level": level,
+            "text": text,
+            "ts": entry["ts"],
+        })
+
+    def debug(self, msg) -> None:
+        self._route("debug", msg)
+
+    def info(self, msg) -> None:
+        self._route("info", msg)
+
+    def warning(self, msg) -> None:
+        self._route("warning", msg)
+
+    def error(self, msg) -> None:
+        self._route("error", msg)
+
+
+def _make_url_logger(job: "JobState", url_state: "UrlState") -> _YDLLogger:
+    """Factory — kept as a function for test seam parity with hooks."""
+    return _YDLLogger(job, url_state)
+
+
 def _emit(job: JobState, event: dict) -> None:
     """Broadcast an SSE event to every subscriber currently connected.
 
@@ -191,12 +368,66 @@ def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], 
     - Raises `_Cancelled` when `job.cancelled` is set (yt-dlp will surface
       this as a DownloadError, which `_run_one` catches).
     - Throttles to at most ~5 events/sec/URL.
+    - On the first tick carrying an info_dict, emits url_metadata with
+      thumbnail_ready=False and stores title/uploader/duration on UrlState.
     """
     def hook(d: dict) -> None:
         if job.cancelled:
             raise _Cancelled()
 
-        if d.get("status") != "downloading":
+        info = d.get("info_dict") or {}
+        if info and not url_state.metadata_emitted:
+            url_state.title = info.get("title")
+            url_state.uploader = info.get("uploader")
+            url_state.duration = info.get("duration")
+            url_state.metadata_emitted = True
+            _emit(job, {
+                "type": "url_metadata",
+                "job_id": job.id,
+                "url": url_state.url,
+                "title": url_state.title,
+                "uploader": url_state.uploader,
+                "duration": url_state.duration,
+                "thumbnail_ready": False,
+            })
+            thumb_src = _pick_thumbnail_url(info)
+            if thumb_src:
+                idx = _url_idx(job, url_state.url)
+
+                def _do_fetch() -> None:
+                    if _fetch_thumbnail(job.id, idx, thumb_src):
+                        url_state.thumbnail_ready = True
+                        _emit(job, {
+                            "type": "url_metadata",
+                            "job_id": job.id,
+                            "url": url_state.url,
+                            "title": url_state.title,
+                            "uploader": url_state.uploader,
+                            "duration": url_state.duration,
+                            "thumbnail_ready": True,
+                        })
+
+                threading.Thread(target=_do_fetch, daemon=True).start()
+
+        status = d.get("status")
+        if status == "finished":
+            # yt-dlp signals download-complete; postprocessing begins now.
+            url_state.phase = "postprocessing"
+            _emit(job, {
+                "type": "progress",
+                "job_id": job.id,
+                "url": url_state.url,
+                "percent": 100.0,
+                "downloaded_bytes": d.get("downloaded_bytes") or url_state.downloaded_bytes,
+                "total_bytes": d.get("total_bytes") or url_state.total_bytes,
+                "speed": None,
+                "eta": None,
+                "filename": d.get("filename") or url_state.filename,
+                "phase": "postprocessing",
+            })
+            return
+
+        if status != "downloading":
             return
 
         now = time.monotonic()
@@ -214,6 +445,7 @@ def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], 
         url_state.speed = d.get("speed")
         url_state.eta = d.get("eta")
         url_state.filename = d.get("filename")
+        url_state.phase = "downloading"
 
         _emit(job, {
             "type": "progress",
@@ -225,6 +457,7 @@ def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], 
             "speed": d.get("speed"),
             "eta": d.get("eta"),
             "filename": d.get("filename"),
+            "phase": "downloading",
         })
 
     return hook
@@ -238,6 +471,7 @@ def _run_one(job: JobState, raw_url: str) -> None:
     # but hadn't started running when cancel was hit.
     if job.cancelled:
         url_state.status = "cancelled"
+        url_state.phase = "failed"
         url_state.error = "Cancelled"
         _emit(job, {"type": "url_failed", "job_id": job.id,
                     "url": raw_url, "error": "Cancelled"})
@@ -245,6 +479,7 @@ def _run_one(job: JobState, raw_url: str) -> None:
 
     hook = _make_progress_hook(job, url_state)
     try:
+        url_state.phase = "resolving"
         clean = sanitize_url(raw_url)
         url_state.sanitized_url = clean
         url_state.status = "downloading"
@@ -259,9 +494,11 @@ def _run_one(job: JobState, raw_url: str) -> None:
             force=job.force,
             concurrent_fragments=job.fragments,
             progress_hooks=[hook],
+            logger=_make_url_logger(job, url_state),
         )
     except _Cancelled:
         url_state.status = "cancelled"
+        url_state.phase = "failed"
         _emit(job, {"type": "url_failed", "job_id": job.id,
                     "url": raw_url, "error": "Cancelled"})
         return
@@ -269,10 +506,12 @@ def _run_one(job: JobState, raw_url: str) -> None:
         # yt-dlp may wrap _Cancelled in DownloadError — detect by chained cause.
         if isinstance(e.__cause__, _Cancelled) or "Cancelled" in str(e):
             url_state.status = "cancelled"
+            url_state.phase = "failed"
             _emit(job, {"type": "url_failed", "job_id": job.id,
                         "url": raw_url, "error": "Cancelled"})
             return
         url_state.status = "failed"
+        url_state.phase = "failed"
         url_state.error = str(e)
         _emit(job, {"type": "url_failed", "job_id": job.id,
                     "url": raw_url, "error": str(e)})
@@ -280,12 +519,14 @@ def _run_one(job: JobState, raw_url: str) -> None:
 
     if not paths:
         url_state.status = "failed"
+        url_state.phase = "failed"
         url_state.error = "Download failed"
         _emit(job, {"type": "url_failed", "job_id": job.id,
                     "url": raw_url, "error": "Download failed"})
         return
 
     url_state.status = "completed"
+    url_state.phase = "complete"
     url_state.paths = paths
     _emit(job, {"type": "url_completed", "job_id": job.id,
                 "url": raw_url, "paths": paths})
@@ -316,6 +557,13 @@ def _supervise(job: JobState, futures: list) -> None:
     _emit(job, {"type": "job_completed", "job_id": job.id, "summary": summary})
     if job.executor is not None:
         job.executor.shutdown(wait=False)
+    # Best-effort cleanup of thumbnail tempdir. Only remove if no
+    # subscribers are still streaming — otherwise reconnects in the next
+    # second would 404 on thumbs that should still render.
+    with job.lock:
+        subs_remaining = len(job.subscribers)
+    if subs_remaining == 0:
+        _cleanup_thumb_dir(job)
 
 
 def _start_job(job: JobState) -> None:
@@ -611,28 +859,6 @@ _INDEX_CSS_BASE = """  :root {
     #status-indicator:not(.active):not(.done):not(.failed) { animation: none; }
     #idle-cursor { animation: none; }
   }
-  /* ── URL rows: grid for columnar alignment ── */
-  .url-row {
-    display: grid;
-    grid-template-columns: 6ch minmax(0, 1fr) auto;
-    align-items: baseline;
-    gap: 0 1ch;
-    padding: 1px 0;
-    font-size: var(--fs-sm);
-  }
-  .url-row .col-glyph { flex-shrink: 0; }
-  .url-row .col-url { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .url-row .col-right {
-    display: flex; align-items: baseline; gap: 1ch;
-    justify-content: flex-end; white-space: nowrap; font-size: var(--fs-sm);
-  }
-  .url-row .result-arrow { color: var(--frame); }
-  .url-row .result-name { color: var(--accent); overflow: hidden; text-overflow: ellipsis; max-width: 30ch; }
-  .url-row .reveal-btn {
-    background: transparent; color: var(--accent);
-    border: 1px solid var(--frame); padding: 0 5px;
-    font: inherit; font-size: var(--fs-sm); cursor: pointer;
-  }
   /* ── Stats subpanel inside OUTPUT panel ── */
   #stats-panel {
     font-size: var(--fs-sm);
@@ -694,6 +920,97 @@ _INDEX_CSS_BASE = """  :root {
   }
   @media (max-width: 480px) {
     #theme-popover { left: 0.5rem; right: 0.5rem; width: auto; }
+  }
+
+  /* ── rich job cards ─────────────────────────────────────────────── */
+  .card {
+    display: grid;
+    grid-template-columns: 128px 1fr;
+    gap: 14px;
+    padding: 12px 14px;
+    border: 1px solid var(--frame);
+    margin: 8px 0;
+    background: var(--bg);
+  }
+  .card-thumb {
+    width: 120px;
+    height: 68px;
+    background: var(--dim);
+    border: 1px solid var(--frame);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .card-thumb--placeholder::before {
+    content: "▢";
+    color: var(--frame);
+    font-size: 24px;
+  }
+  .card-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .card-head { display: flex; align-items: baseline; gap: 8px; }
+  .card-title {
+    color: var(--accent);
+    font-weight: bold;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-meta { color: var(--dim); font-size: 0.9em; }
+  .card-badge { color: var(--accent); font-family: inherit; margin-left: auto; }
+  .card[data-state="complete"] .card-badge { color: var(--ok); }
+  .card[data-state="failed"] .card-badge { color: var(--err); }
+  .card[data-state="resolving"] .card-badge::after {
+    content: "";
+    display: inline-block;
+    animation: card-blink 1s infinite;
+  }
+  @keyframes card-blink {
+    50% { opacity: 0.3; }
+  }
+  .card-progress { display: flex; align-items: center; gap: 10px; }
+  .card-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--dim);
+    border: 1px solid var(--frame);
+    position: relative;
+  }
+  .card-bar > span {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    background: var(--bar, var(--accent));
+    transition: width 0.15s linear;
+  }
+  .card-stats { color: var(--dim); font-size: 0.9em; min-width: 24ch; text-align: right; }
+  .card-reveal {
+    background: transparent;
+    border: 1px solid var(--frame);
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.9em;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .card-reveal:hover { background: var(--dim); }
+  .card-log {
+    list-style: none;
+    margin: 0; padding: 0;
+    color: var(--dim);
+    font-size: 0.9em;
+  }
+  .card-log-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-log-line[data-level="warning"] { color: var(--warn); }
+  .card-log-line[data-level="error"] { color: var(--err); }
+  /* State-driven show/hide */
+  .card[data-state="queued"] .card-progress,
+  .card[data-state="resolving"] .card-progress,
+  .card[data-state="queued"] .card-log,
+  .card[data-state="resolving"] .card-log { display: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .card[data-state="resolving"] .card-badge::after { animation: none; }
   }
 """
 
@@ -1340,6 +1657,25 @@ _INDEX_HTML_BODY = """<div id="status-bar">
   <input class="pop-search" id="pop-search" placeholder="search…" autocomplete="off">
   <div class="grid" id="pop-grid"></div>
 </div>
+
+<template id="card-template">
+  <article class="card" data-state="queued">
+    <div class="card-thumb card-thumb--placeholder"></div>
+    <div class="card-body">
+      <header class="card-head">
+        <span class="card-title"></span>
+        <span class="card-meta"></span>
+        <span class="card-badge">[--]</span>
+      </header>
+      <div class="card-progress">
+        <div class="card-bar"><span style="width:0%"></span></div>
+        <div class="card-stats"></div>
+        <button type="button" class="card-reveal" hidden>↗</button>
+      </div>
+      <ul class="card-log"></ul>
+    </div>
+  </article>
+</template>
 """
 
 _INDEX_JS = """const THEMES = [
@@ -1465,122 +1801,141 @@ _INDEX_JS = """const THEMES = [
     updateStatsMeta();
   }
 
-  function rowFor(url) {
-    const id = 'row-' + btoa(unescape(encodeURIComponent(url))).replace(/=/g, '');
-    let row = document.getElementById(id);
-    if (row) return row;
-    row = document.createElement('div');
-    row.className = 'url-row';
-    row.id = id;
-    // Columnar grid: [GLYPH] | <url> | <right-col>
-    row.innerHTML = `<span class="col-glyph glyph dim">[--]</span><span class="col-url url">${escapeHtml(url)}</span><span class="col-right"><span class="progress dim">queued</span></span>`;
-    rows.appendChild(row);
-    return row;
+  // ── Card rendering — rich job cards ────────────────────────────────────
+  const cardEls = {};   // url -> HTMLElement
+  const cardState = {}; // url -> { phase, title, uploader, duration, thumbnail_ready, log[], etc. }
+
+  function upsertCard(url) {
+    if (cardEls[url]) return cardEls[url];
+    const tpl = $('card-template');
+    const node = tpl.content.firstElementChild.cloneNode(true);
+    node.dataset.url = url;
+    rows.appendChild(node);
+    cardEls[url] = node;
+    if (!cardState[url]) cardState[url] = { phase: 'queued', log: [] };
+    node.querySelector('.card-title').textContent = url;
+    return node;
   }
 
-  function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, c => (
-      {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
-    ));
-  }
-
-  function setGlyph(row, glyph, cls, pulse) {
-    const g = row.querySelector('.glyph');
-    g.textContent = glyph;
-    g.className = 'col-glyph glyph ' + cls + (pulse ? ' live-pulse' : '');
-    // Track the row's last-known status class so handlers can avoid
-    // double-counting transitions (e.g., url_failed for a row that
-    // was never `active` because cancel hit before url_started).
-    row.dataset.status = cls;
-  }
-
-  function setProgress(row, pct, extras) {
-    const right = row.querySelector('.col-right');
-    if (pct == null) {
-      right.innerHTML = `<span class="progress dim">${escapeHtml(extras || '')}</span>`;
-      return;
-    }
-    // Clamp filled to [0, 14] — yt-dlp can report pct > 100 for
-    // fragmented downloads with estimated totals, which would make
-    // (14 - filled) negative and crash String.repeat() with RangeError.
-    const filled = Math.max(0, Math.min(14, Math.round(pct / 100 * 14)));
-    const bar = '▓'.repeat(filled) + '░'.repeat(14 - filled);
-    // bar uses only ▓/░ (HTML-safe). Escape `extras` since it can come
-    // from progressExtras() today but might carry user-controlled text
-    // (filenames, error strings) in future callers.
-    const extrasHtml = extras ? ` <span class="dim">${escapeHtml(extras)}</span>` : '';
-    right.innerHTML = `<span class="progress"><span class="bar-graph">${bar}</span> <span class="live">${pct.toFixed(1)}%</span>${extrasHtml}</span>`;
-  }
-
-  function fmtBytes(b) {
-    if (!b) return '';
-    const u = ['B','KB','MB','GB']; let i = 0;
-    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
-    return b.toFixed(1) + u[i];
-  }
-  function fmtSpeed(b) { return b ? fmtBytes(b) + '/s' : ''; }
-  function fmtEta(s) {
-    if (s == null) return '';
-    const m = Math.floor(s / 60), r = s % 60;
-    return `${m}:${String(r).padStart(2,'0')} left`;
-  }
-  function progressExtras(speed, eta) {
-    const bits = [];
-    if (speed) bits.push(fmtSpeed(speed));
-    if (eta != null) bits.push(fmtEta(eta));
-    return bits.join(' · ');
-  }
-
-  function addRevealButton(row, paths) {
-    const right = row.querySelector('.col-right');
-    const name = paths[0].split('/').pop();
-    const dispName = paths.length === 1 ? name : `${paths.length} files`;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'reveal-btn';
-    btn.textContent = '↗';
-    btn.title = 'Reveal in Finder';
-    btn.onclick = () => fetch('/reveal', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
-      body: JSON.stringify({path: paths[0]})
-    });
-    right.innerHTML = `<span class="result-arrow">─►</span><span class="result-name">${escapeHtml(dispName)}</span>`;
-    right.appendChild(btn);
-  }
-
-  function applyUrlState(row, u) {
-    if (u.status === 'pending') {
-      setGlyph(row, '[--]', 'dim');
-      setProgress(row, null, 'queued');
-    } else if (u.status === 'downloading') {
-      setGlyph(row, '[..]', 'live', true);
-      setProgress(row, u.percent, progressExtras(u.speed, u.eta));
-    } else if (u.status === 'completed') {
-      setGlyph(row, '[OK]', 'ok');
-      if (u.paths && u.paths.length) addRevealButton(row, u.paths);
-      else setProgress(row, 100, '');
-    } else if (u.status === 'failed') {
-      setGlyph(row, '[!!]', 'err');
-      setProgress(row, null, u.error || 'failed');
-    } else if (u.status === 'cancelled') {
-      setGlyph(row, '[xx]', 'err');
-      setProgress(row, null, 'cancelled');
+  function phaseBadge(phase) {
+    switch (phase) {
+      case 'downloading':    return '[..]';
+      case 'postprocessing': return '[~~]';
+      case 'complete':       return '[OK]';
+      case 'failed':         return '[xx]';
+      case 'resolving':      return '[??]';
+      default:               return '[--]';
     }
   }
 
-  // Derive counts from current row states (the DOM, via dataset.status set
-  // by setGlyph). Idempotent — called after every state transition rather
-  // than incrementing on each event. Avoids drift when a job_snapshot's
-  // states overlap with queued live events from the same connection window
-  // (the SSE broadcast can deliver both for the same URL).
-  function recountFromDOM() {
+  function formatDuration(seconds) {
+    if (seconds == null) return '';
+    const m = Math.floor(seconds / 60);
+    const s = String(seconds % 60).padStart(2, '0');
+    return m + ':' + s;
+  }
+
+  function formatBytes(n) {
+    if (!n) return '0B';
+    const units = ['B','KB','MB','GB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return n.toFixed(n >= 100 || i === 0 ? 0 : 1) + units[i];
+  }
+
+  function progressStats(st) {
+    if (st.phase === 'postprocessing') return 'extracting audio…';
+    if (st.phase === 'complete') {
+      return st.total_bytes ? ('saved · ' + formatBytes(st.total_bytes)) : 'done';
+    }
+    if (st.phase === 'failed') return 'failed';
+    if (st.phase === 'downloading') {
+      const parts = [];
+      if (st.speed) parts.push(formatBytes(st.speed) + '/s');
+      if (st.eta != null) parts.push('ETA ' + formatDuration(st.eta));
+      if (st.downloaded_bytes && st.total_bytes) {
+        parts.push(formatBytes(st.downloaded_bytes) + '/' + formatBytes(st.total_bytes));
+      }
+      return parts.join(' · ');
+    }
+    return '';
+  }
+
+  function renderCard(url) {
+    const el = upsertCard(url);
+    const st = cardState[url] || {};
+    el.dataset.state = st.phase || 'queued';
+
+    // Title row
+    if (st.title) {
+      el.querySelector('.card-title').textContent = st.title;
+      const metaParts = [];
+      if (st.uploader) metaParts.push(st.uploader);
+      if (st.duration) metaParts.push(formatDuration(st.duration));
+      el.querySelector('.card-meta').textContent = metaParts.join(' · ');
+    } else {
+      el.querySelector('.card-title').textContent = url;
+      el.querySelector('.card-meta').textContent = '';
+    }
+
+    // Badge
+    el.querySelector('.card-badge').textContent = phaseBadge(st.phase);
+
+    // Thumbnail
+    const thumb = el.querySelector('.card-thumb');
+    if (st.thumbnail_ready && currentJobId) {
+      thumb.classList.remove('card-thumb--placeholder');
+      const idx = st.url_idx != null ? st.url_idx : 0;
+      thumb.innerHTML = `<img src="/jobs/${currentJobId}/thumb/${idx}.jpg?token=${encodeURIComponent(CSRF_TOKEN)}" alt="">`;
+    } else {
+      thumb.classList.add('card-thumb--placeholder');
+      thumb.innerHTML = '';
+    }
+
+    // Progress
+    el.querySelector('.card-bar span').style.width = (st.percent || 0) + '%';
+    el.querySelector('.card-stats').textContent = progressStats(st);
+
+    // Reveal-in-Finder button
+    const revealBtn = el.querySelector('.card-reveal');
+    if (st.phase === 'complete' && st.paths && st.paths.length > 0) {
+      revealBtn.hidden = false;
+      revealBtn.onclick = () => {
+        fetch('/reveal', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
+          body: JSON.stringify({path: st.paths[0]}),
+        });
+      };
+    } else {
+      revealBtn.hidden = true;
+      revealBtn.onclick = null;
+    }
+
+    // Log tail — last 3
+    const ul = el.querySelector('.card-log');
+    ul.innerHTML = '';
+    const tail = (st.log || []).slice(-3);
+    for (const line of tail) {
+      const li = document.createElement('li');
+      li.className = 'card-log-line';
+      li.dataset.level = line.level;
+      li.textContent = line.text;
+      ul.appendChild(li);
+    }
+  }
+
+  // Derive counts from current card states. Idempotent — called after every
+  // state transition rather than incrementing on each event. Avoids drift when
+  // a job_snapshot's states overlap with queued live events from the same
+  // connection window (the SSE broadcast can deliver both for the same URL).
+  function recountFromCards() {
     const next = { done: 0, active: 0, fail: 0, queued: 0 };
-    rows.querySelectorAll('.url-row').forEach(row => {
-      const s = row.dataset.status;
-      if (s === 'ok') next.done++;
-      else if (s === 'live') next.active++;
-      else if (s === 'err') next.fail++;
+    rows.querySelectorAll('.card').forEach(card => {
+      const s = card.dataset.state;
+      if (s === 'complete') next.done++;
+      else if (s === 'downloading' || s === 'postprocessing' || s === 'resolving') next.active++;
+      else if (s === 'failed') next.fail++;
       else next.queued++;
     });
     counts = next;
@@ -1589,38 +1944,81 @@ _INDEX_JS = """const THEMES = [
 
   function handleEvent(ev) {
     if (ev.type === 'job_snapshot') {
-      ev.urls.forEach(u => {
-        const row = rowFor(u.url);
-        applyUrlState(row, u);
-      });
-      recountFromDOM();
+      for (let i = 0; i < ev.urls.length; i++) {
+        const u = ev.urls[i];
+        // Map legacy status to phase when phase is absent
+        let phase = u.phase;
+        if (!phase) {
+          if (u.status === 'completed') phase = 'complete';
+          else if (u.status === 'failed') phase = 'failed';
+          else if (u.status === 'cancelled') phase = 'failed';
+          else if (u.status === 'downloading') phase = 'downloading';
+          else phase = 'queued';
+        }
+        cardState[u.url] = {
+          url_idx: i,
+          phase,
+          title: u.title, uploader: u.uploader, duration: u.duration,
+          thumbnail_ready: u.thumbnail_ready, log: u.log || [],
+          percent: u.percent, speed: u.speed, eta: u.eta,
+          downloaded_bytes: u.downloaded_bytes, total_bytes: u.total_bytes,
+          paths: u.paths,
+        };
+        renderCard(u.url);
+      }
+      recountFromCards();
       if (ev.complete) {
         $('submit').disabled = false;
         $('cancel').disabled = true;
         stopSpinner();
-        // recountFromDOM already called above; updateStatusIndicator() runs
+        // recountFromCards already called above; updateStatusIndicator() runs
         // via refreshSummary() inside it, reflecting the completed state.
       }
     } else if (ev.type === 'url_started') {
-      const row = rowFor(ev.url);
-      setGlyph(row, '[..]', 'live', true);
-      setProgress(row, 0, '');
-      recountFromDOM();
+      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
+      cardState[ev.url].phase = 'resolving';
+      if (cardState[ev.url].url_idx === undefined) {
+        cardState[ev.url].url_idx = Object.keys(cardState).indexOf(ev.url);
+      }
+      renderCard(ev.url);
+      recountFromCards();
+    } else if (ev.type === 'url_metadata') {
+      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
+      Object.assign(cardState[ev.url], {
+        title: ev.title, uploader: ev.uploader, duration: ev.duration,
+        thumbnail_ready: ev.thumbnail_ready,
+      });
+      if (cardState[ev.url].url_idx === undefined) {
+        cardState[ev.url].url_idx = Object.keys(cardState).indexOf(ev.url);
+      }
+      renderCard(ev.url);
     } else if (ev.type === 'progress') {
-      const row = rowFor(ev.url);
-      setGlyph(row, '[..]', 'live', true);
-      setProgress(row, ev.percent, progressExtras(ev.speed, ev.eta));
+      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
+      Object.assign(cardState[ev.url], {
+        phase: ev.phase || cardState[ev.url].phase,
+        percent: ev.percent,
+        speed: ev.speed, eta: ev.eta,
+        downloaded_bytes: ev.downloaded_bytes, total_bytes: ev.total_bytes,
+      });
+      renderCard(ev.url);
+    } else if (ev.type === 'url_log') {
+      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
+      cardState[ev.url].log = cardState[ev.url].log || [];
+      cardState[ev.url].log.push({ level: ev.level, text: ev.text, ts: ev.ts });
+      if (cardState[ev.url].log.length > 50) cardState[ev.url].log.shift();
+      renderCard(ev.url);
     } else if (ev.type === 'url_completed') {
-      const row = rowFor(ev.url);
-      setGlyph(row, '[OK]', 'ok');
-      addRevealButton(row, ev.paths);
-      recountFromDOM();
+      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
+      cardState[ev.url].phase = 'complete';
+      cardState[ev.url].paths = ev.paths;
+      renderCard(ev.url);
+      recountFromCards();
     } else if (ev.type === 'url_failed') {
-      const row = rowFor(ev.url);
-      const cancelled = ev.error === 'Cancelled';
-      setGlyph(row, cancelled ? '[xx]' : '[!!]', 'err');
-      setProgress(row, null, ev.error || 'failed');
-      recountFromDOM();
+      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
+      cardState[ev.url].phase = 'failed';
+      cardState[ev.url].error = ev.error;
+      renderCard(ev.url);
+      recountFromCards();
     } else if (ev.type === 'job_completed') {
       $('submit').disabled = false;
       $('cancel').disabled = true;
@@ -1628,8 +2026,8 @@ _INDEX_JS = """const THEMES = [
       es = null;
       currentJobId = null;
       stopSpinner();
-      // Re-derive counts from DOM so the indicator reflects final state.
-      recountFromDOM();
+      // Re-derive counts from cards so the indicator reflects final state.
+      recountFromCards();
     }
   }
 
@@ -1645,6 +2043,9 @@ _INDEX_JS = """const THEMES = [
     $('submit').disabled = true;
     $('cancel').disabled = false;
     rows.innerHTML = '';
+    // Reset card state so re-submissions don't reuse detached DOM nodes.
+    for (const k in cardEls) delete cardEls[k];
+    for (const k in cardState) delete cardState[k];
     stopSpinner();
     counts = { done: 0, active: 0, fail: 0, queued: 0 };
     refreshSummary();
@@ -1999,6 +2400,13 @@ def _build_snapshot(job: JobState) -> dict:
                 "filename": s.filename,
                 "paths": list(s.paths),
                 "error": s.error,
+                # v1.6 — rich card fields
+                "title": s.title,
+                "uploader": s.uploader,
+                "duration": s.duration,
+                "thumbnail_ready": s.thumbnail_ready,
+                "phase": s.phase,
+                "log": list(s.log),
             }
             for s in job.url_states.values()
         ],
@@ -2059,7 +2467,10 @@ async def _events_iter(job_id: str):
             try:
                 job.subscribers.remove(sub_queue)
             except ValueError:
-                pass  # already removed; no-op
+                pass
+            remaining = len(job.subscribers)
+        if job.completed and remaining == 0:
+            _cleanup_thumb_dir(job)
 
 
 @app.get("/jobs/{job_id}/events")
@@ -2084,6 +2495,29 @@ async def cancel_job(job_id: str, _csrf: str = Depends(_require_csrf)) -> dict: 
     if job.executor is not None:
         job.executor.shutdown(wait=False, cancel_futures=True)
     return {"ok": True}
+
+
+@app.get("/jobs/{job_id}/thumb/{url_idx}.jpg")
+async def get_thumbnail(
+    job_id: str,
+    url_idx: int,
+    _csrf: str = Depends(_require_csrf),  # pylint: disable=unused-argument
+) -> FileResponse:
+    """Serve a per-URL thumbnail from the job-scoped temp dir.
+
+    CSRF-guarded via ?token=... query param (image tags can't send custom
+    headers). Returns 404 if job unknown, url_idx out of range, or thumb
+    not yet on disk.
+    """
+    job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"unknown job_id: {job_id}")
+    if url_idx < 0 or url_idx >= len(job.url_states):
+        raise HTTPException(404, "url_idx out of range")
+    path = os.path.join(_thumb_dir(job_id), f"{url_idx}.jpg")
+    if not os.path.exists(path):
+        raise HTTPException(404, "thumbnail not ready")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 class RevealRequest(BaseModel):

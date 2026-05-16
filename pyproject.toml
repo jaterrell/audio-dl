@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-dl"
-version = "1.5"
+version = "1.6"
 description = "Download high-quality audio from YouTube, SoundCloud, and any other site yt-dlp supports."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 dependencies = ["yt-dlp"]
 
 [project.optional-dependencies]
-ui = ["fastapi", "uvicorn[standard]"]
+ui = ["fastapi", "uvicorn[standard]", "httpx"]
 # Build-time deps for the macOS .app bundle (Phase 3b: embedded ffmpeg).
 # Install with: pip install -e '.[ui,app]'
 app = ["imageio-ffmpeg"]

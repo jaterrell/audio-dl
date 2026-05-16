@@ -28,7 +28,7 @@ Requirements:
 """
 from __future__ import annotations
 
-__version__ = "1.5"
+__version__ = "1.6"
 
 import argparse
 from collections.abc import Callable
@@ -221,6 +221,7 @@ def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals,too-m
     cookies_from_browser: str | None = None,
     progress_hooks: list[Callable[[dict], None]] | None = None,
     ffmpeg_location: str | None = None,
+    logger: object | None = None,
 ) -> dict:
     """
     Build the yt-dlp options dict for the requested media format.
@@ -300,6 +301,8 @@ def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals,too-m
         # directory containing ffmpeg/ffprobe. Passing the binary path itself
         # works for both lookups on the supported yt-dlp range.
         opts["ffmpeg_location"] = ffmpeg_location
+    if logger is not None:
+        opts["logger"] = logger
 
     return opts
 
@@ -324,6 +327,7 @@ def download_media(  # pylint: disable=too-many-arguments,too-many-positional-ar
     force: bool = False,
     concurrent_fragments: int = 4,
     progress_hooks: list[Callable[[dict], None]] | None = None,
+    logger: object | None = None,
 ) -> list[str]:
     """
     Download from ``url`` in the requested ``media_format``.
@@ -356,6 +360,7 @@ def download_media(  # pylint: disable=too-many-arguments,too-many-positional-ar
         # back to PATH (which the dep check has already verified, or the user
         # bypassed the check via the API).
         ffmpeg_location=_find_ffmpeg(),
+        logger=logger,
     )
 
     mode = "playlist" if playlist else "single track"

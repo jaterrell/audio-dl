@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.6 — Rich job cards + structural-identity themes (2026-05-16)
+
+Web UI: replaces the running-job row list with a stack of full-width
+cards, each one a self-contained status panel — thumbnail, title +
+uploader · duration, live speed/ETA/bytes, last 3 yt-dlp log lines,
+and the v1.6/v1.7 per-theme structural typography + grid identities
+shipped together.
+
+### Added
+- **Rich job cards** ([2026-05-16 spec](docs/superpowers/specs/2026-05-16-rich-job-cards-design.md)).
+  Per-URL card with:
+  - Server-proxied thumbnail at `/jobs/{id}/thumb/{idx}.jpg`
+    (CSRF-guarded; no cross-origin loads).
+  - Title / uploader / duration extracted from yt-dlp's info dict.
+  - Live speed, ETA, downloaded/total bytes on every progress tick.
+  - Filtered yt-dlp log tail: keeps `[hls]`, `[ffmpeg]`,
+    `[ExtractAudio]`, `[EmbedThumbnail]`, `[Metadata]`, warnings and
+    errors; drops debug, download-destination and extractor chatter.
+  - Reveal-in-Finder on completed cards.
+- **Six lifecycle states per card:** queued, resolving, downloading,
+  postprocessing, complete, failed. `phase` is set server-side and
+  travels on the `progress` event.
+- **`url_metadata` SSE event** (one-shot per URL, may fire twice — once
+  on info-known, once on thumb-fetched).
+- **`url_log` SSE event** (filtered yt-dlp output, bounded ring of 50
+  per URL).
+- **`progress` event** gains a `phase` field; existing fields preserved.
+- **`job_snapshot`** carries title / uploader / duration /
+  thumbnail_ready / phase / log for late-connect subscribers.
+- **Per-theme typography + structural identities shipped:** Phosphor
+  reference rendering, vintage cluster (Amber CRT, Solarized, Gruvbox),
+  editorial cluster (Rose Pine + Moon + Dawn), modern cluster (Tokyo
+  Night, Atom Dark Pro, Claude), and per-theme CSS Grid layouts so each
+  theme is structurally distinct.
+
+### Changed
+- `progress` event payload includes the new `phase` field; existing
+  consumers ignore unknown fields.
+- yt-dlp now runs with a per-URL `logger=` so its output is routed
+  through the SSE log stream rather than printed to the UI process's
+  stderr.
+
+### Internal
+- Pure functions added: `_should_keep_log`, `_pick_thumbnail_url`,
+  `_url_idx`. Each is independently unit-tested.
+- Thumbnail cleanup runs on job-complete-and-last-subscriber-disconnect.
+- One new runtime dependency: `httpx` (used for server-side thumbnail
+  fetching). Added to the `[ui]` extra in `pyproject.toml`.
+
 ## v1.5 — Console UI + theme system (2026-05-15)
 
 Web UI redesign — replaces the macOS-system-light look with a

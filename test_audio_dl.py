@@ -466,6 +466,39 @@ class TestBuildYdlOptsFfmpegLocation:
 
 
 # ---------------------------------------------------------------------------
+# _build_ydl_opts — logger= parameter
+# ---------------------------------------------------------------------------
+
+class TestBuildYdlOptsLogger:
+    def _opts(self, **kwargs):
+        defaults = {
+            "media_format": "mp3",
+            "output_dir": "/tmp/test",
+            "playlist": False,
+            "force": False,
+            "concurrent_fragments": 4,
+            "platform": "youtube",
+        }
+        defaults.update(kwargs)
+        return _build_ydl_opts(**defaults)
+
+    def test_logger_passed_through(self):
+        class FakeLogger:
+            pass
+        fake = FakeLogger()
+        opts = self._opts(logger=fake)
+        assert opts["logger"] is fake
+
+    def test_logger_omitted_when_none(self):
+        opts = self._opts(logger=None)
+        assert "logger" not in opts
+
+    def test_logger_omitted_when_not_provided(self):
+        opts = self._opts()
+        assert "logger" not in opts
+
+
+# ---------------------------------------------------------------------------
 # _find_ffmpeg  (Phase 3b: bundled ffmpeg via imageio-ffmpeg + PATH fallback)
 # ---------------------------------------------------------------------------
 

@@ -2,15 +2,28 @@
 # pylint: disable=import-outside-toplevel,reimported,redefined-outer-name,protected-access,unused-argument
 # pylint: disable=too-many-lines
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
+import collections
 import json
+import os
+import queue
 import re
 import threading
 import time
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 
-from audio_dl_ui import app, JOBS
+from audio_dl_ui import (
+    app,
+    JOBS,
+    _should_keep_log,
+    _pick_thumbnail_url,
+    UrlState,
+    _make_url_logger,
+    JobState,
+)
 
 # Set a known CSRF token at module load so all tests share the same value.
 app.state.csrf_token = "test-token"
@@ -219,7 +232,15 @@ class TestProgressHook:
         job, url_state = self._make_job()
         sub = self._attach_subscriber(job)
         hook = _make_progress_hook(job, url_state)
-        hook({"status": "finished", "downloaded_bytes": 0})
+        # "finished" now emits a postprocessing progress event (not ignored)
+        hook({"status": "finished", "downloaded_bytes": 1000, "total_bytes": 1000,
+              "filename": "/tmp/x.m4a.part"})
+        assert not sub.empty()
+        ev = sub.get_nowait()
+        assert ev["type"] == "progress"
+        assert ev["phase"] == "postprocessing"
+        # other statuses (e.g. "error") are still ignored
+        hook({"status": "error"})
         assert sub.empty()
 
     def test_cancel_flag_raises(self):
@@ -862,17 +883,6 @@ class TestDefaultOutputDirEscaped:
                 _app.state.default_output_dir = original
 
 
-class TestBtoaUnicodeSafe:
-    """The rowFor() JS uses btoa for row ids. Raw btoa throws on non-ASCII;
-    wrapping with unescape(encodeURIComponent(...)) makes it UTF-8 safe."""
-
-    def test_js_uses_utf8_safe_btoa(self):
-        # Structural assertion on the embedded JS (post-refactor: was _INDEX_HTML).
-        from audio_dl_ui import _INDEX_JS
-        assert "btoa(unescape(encodeURIComponent(url)))" in _INDEX_JS
-        # No remaining raw btoa(url) without the wrap.
-        assert "btoa(url)" not in _INDEX_JS
-
 
 class TestBrowserHostRewrite:
     """When --host is a bind-all address (0.0.0.0 or ::), the auto-opened
@@ -1155,3 +1165,762 @@ class TestThemeRendering:
         assert defaults == ['phosphor'], (
             f"Expected exactly ['phosphor'] as default, got {defaults}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _should_keep_log — pure filter for yt-dlp log lines
+# ---------------------------------------------------------------------------
+
+class TestShouldKeepLog:
+    @pytest.mark.parametrize("level,text,expected", [
+        # Always keep warning + error
+        ("warning", "anything at all", True),
+        ("warning", "", True),
+        ("error", "boom", True),
+
+        # Drop all debug regardless of text
+        ("debug", "[debug] anything", False),
+        ("debug", "[hls] downloading fragment 1/2", False),
+
+        # info: keep the phase markers
+        ("info", "[hls] downloading fragment 12/45", True),
+        ("info", "[ffmpeg] Merging into mp4", True),
+        ("info", "[ffmpeg] Adding metadata", True),
+        ("info", "[ExtractAudio] Destination: foo.m4a", True),
+        ("info", "[EmbedThumbnail] adding thumbnail to foo.m4a", True),
+        ("info", "[Metadata] Embedding metadata", True),
+
+        # info: drop chatter
+        ("info", "[download] Destination: foo.m4a.part", False),
+        ("info", "[info] Writing video thumbnail", False),
+        ("info", "[youtube] Extracting URL: https://...", False),
+        ("info", "Plain text with no tag", False),
+        ("info", "", False),
+
+        # Unknown / novel levels behave like info (prefix-gated)
+        ("verbose", "[ffmpeg] Merging", True),
+        ("verbose", "[youtube] chatter", False),
+    ])
+    def test_filter(self, level, text, expected):
+        assert _should_keep_log(level, text) is expected
+
+
+class TestPickThumbnailUrl:
+    def test_prefers_width_le_480_among_options(self):
+        info = {"thumbnails": [
+            {"url": "huge.jpg", "width": 1920},
+            {"url": "medium.jpg", "width": 480},
+            {"url": "small.jpg", "width": 120},
+        ]}
+        # Largest width that is still <= 480
+        assert _pick_thumbnail_url(info) == "medium.jpg"
+
+    def test_falls_back_to_smallest_when_none_le_480(self):
+        info = {"thumbnails": [
+            {"url": "huge.jpg", "width": 1920},
+            {"url": "large.jpg", "width": 1080},
+            {"url": "still-large.jpg", "width": 720},
+        ]}
+        # Smallest available
+        assert _pick_thumbnail_url(info) == "still-large.jpg"
+
+    def test_handles_missing_width(self):
+        # Some extractors omit width; those should not crash and should
+        # fall through to the unsized fallback.
+        info = {"thumbnails": [
+            {"url": "unknown.jpg"},
+            {"url": "sized.jpg", "width": 320},
+        ]}
+        assert _pick_thumbnail_url(info) == "sized.jpg"
+
+    def test_only_unsized_returns_first(self):
+        info = {"thumbnails": [
+            {"url": "a.jpg"},
+            {"url": "b.jpg"},
+        ]}
+        assert _pick_thumbnail_url(info) == "a.jpg"
+
+    def test_falls_back_to_singular_thumbnail_field(self):
+        info = {"thumbnail": "single.jpg"}
+        assert _pick_thumbnail_url(info) == "single.jpg"
+
+    def test_returns_none_when_no_thumbnails(self):
+        assert _pick_thumbnail_url({}) is None
+        assert _pick_thumbnail_url({"thumbnails": []}) is None
+        assert _pick_thumbnail_url({"thumbnail": None}) is None
+
+
+class TestUrlStateNewFields:
+    def test_defaults(self):
+        s = UrlState(url="https://example/x")
+        assert s.title is None
+        assert s.uploader is None
+        assert s.duration is None
+        assert s.thumbnail_ready is False
+        assert s.phase is None
+        assert isinstance(s.log, collections.deque)
+        assert s.log.maxlen == 50
+        assert len(s.log) == 0
+
+    def test_log_independence_across_instances(self):
+        # Regression guard: mutable default would share one deque across
+        # all UrlState instances. Use field(default_factory=...).
+        a = UrlState(url="https://example/a")
+        b = UrlState(url="https://example/b")
+        a.log.append({"ts": 1.0, "level": "info", "text": "hello"})
+        assert len(b.log) == 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _fresh_job(url: str = "https://example/x") -> JobState:
+    job = JobState(
+        id="j1", media_format="mp3", output_dir="/tmp",
+        playlist=False, force=False, fragments=4, jobs=1,
+        url_states={url: UrlState(url=url)},
+    )
+    return job
+
+
+# ---------------------------------------------------------------------------
+# _YDLLogger / _make_url_logger
+# ---------------------------------------------------------------------------
+
+class TestYDLLogger:
+    def test_keeps_phase_lines_at_info(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        logger = _make_url_logger(job, urlst)
+
+        logger.info("[hls] downloading fragment 5/10")
+
+        ev = q.get_nowait()
+        assert ev["type"] == "url_log"
+        assert ev["level"] == "info"
+        assert ev["text"] == "[hls] downloading fragment 5/10"
+        assert ev["url"] == urlst.url
+        assert "ts" in ev
+        # also appended to the URL's bounded log deque
+        assert len(urlst.log) == 1
+        assert urlst.log[0]["text"] == "[hls] downloading fragment 5/10"
+
+    def test_drops_filtered_info(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        logger = _make_url_logger(job, urlst)
+
+        logger.info("[download] Destination: foo.m4a.part")
+
+        assert q.empty()
+        assert len(urlst.log) == 0
+
+    def test_drops_all_debug(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        logger = _make_url_logger(job, urlst)
+
+        logger.debug("[hls] downloading fragment 1/1")  # would pass info filter
+
+        assert q.empty()
+        assert len(urlst.log) == 0
+
+    def test_always_keeps_warning_and_error(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        logger = _make_url_logger(job, urlst)
+
+        logger.warning("Slow connection detected")
+        logger.error("HTTP 403")
+
+        ev1 = q.get_nowait()
+        ev2 = q.get_nowait()
+        assert (ev1["level"], ev2["level"]) == ("warning", "error")
+        assert len(urlst.log) == 2
+
+    def test_coerces_non_string(self):
+        # yt-dlp sometimes passes objects (Exceptions). Must not crash.
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        logger = _make_url_logger(job, urlst)
+        logger.error(RuntimeError("boom"))
+        assert urlst.log[-1]["text"] == "boom"
+
+    def test_deque_bounded_at_50(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        logger = _make_url_logger(job, urlst)
+        for i in range(75):
+            logger.warning(f"line {i}")
+        assert len(urlst.log) == 50
+        # Oldest is dropped
+        assert urlst.log[0]["text"] == "line 25"
+        assert urlst.log[-1]["text"] == "line 74"
+
+
+class TestRunOneWiresLogger:
+    def test_logger_passed_to_download_media(self):
+        from audio_dl_ui import _run_one, JOBS
+
+        job = _fresh_job()
+        JOBS[job.id] = job
+        try:
+            captured = {}
+
+            def fake_download(url, **kwargs):
+                captured["logger"] = kwargs.get("logger")
+                return ["/tmp/out.mp3"]
+
+            with patch("audio_dl_ui.download_media", side_effect=fake_download), \
+                 patch("audio_dl_ui.sanitize_url", side_effect=lambda u: u):
+                _run_one(job, list(job.url_states.keys())[0])
+
+            assert captured["logger"] is not None
+            assert hasattr(captured["logger"], "warning")
+            assert hasattr(captured["logger"], "error")
+        finally:
+            JOBS.pop(job.id, None)
+
+
+# ---------------------------------------------------------------------------
+# _make_progress_hook — url_metadata SSE event
+# ---------------------------------------------------------------------------
+
+class TestUrlMetadataEvent:
+    def test_first_info_dict_emits_metadata_event(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        from audio_dl_ui import _make_progress_hook
+        hook = _make_progress_hook(job, urlst)
+
+        info = {
+            "title": "Wandered into the Day",
+            "uploader": "Geotic",
+            "duration": 251,
+            "thumbnails": [{"url": "x.jpg", "width": 320}],
+            "thumbnail": "x.jpg",
+        }
+        # First hook tick with status=downloading and info_dict present
+        hook({"status": "downloading", "downloaded_bytes": 0, "total_bytes": 1000,
+              "info_dict": info})
+
+        # Drain queue; expect url_metadata event among emissions
+        events = []
+        while not q.empty():
+            events.append(q.get_nowait())
+        meta = [e for e in events if e["type"] == "url_metadata"]
+        assert len(meta) == 1
+        assert meta[0]["title"] == "Wandered into the Day"
+        assert meta[0]["uploader"] == "Geotic"
+        assert meta[0]["duration"] == 251
+        assert meta[0]["thumbnail_ready"] is False
+        assert meta[0]["url"] == urlst.url
+        # UrlState is populated
+        assert urlst.title == "Wandered into the Day"
+        assert urlst.metadata_emitted is True
+
+    def test_subsequent_ticks_dont_re_emit_metadata(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        from audio_dl_ui import _make_progress_hook
+        hook = _make_progress_hook(job, urlst)
+
+        info = {"title": "T", "uploader": "U", "duration": 1}
+        # Two ticks > throttle window apart
+        hook({"status": "downloading", "downloaded_bytes": 0, "total_bytes": 1000,
+              "info_dict": info})
+        time.sleep(0.25)
+        hook({"status": "downloading", "downloaded_bytes": 500, "total_bytes": 1000,
+              "info_dict": info})
+
+        meta = [
+            e for e in (q.get_nowait() for _ in range(q.qsize()))
+            if e["type"] == "url_metadata"
+        ]
+        assert len(meta) == 1
+
+    def test_missing_title_uses_none(self):
+        # Real yt-dlp always sends a populated info_dict — but it may lack
+        # title/uploader/duration for some sites. Use a minimally-populated
+        # info_dict so the (truthy) check fires.
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        from audio_dl_ui import _make_progress_hook
+        hook = _make_progress_hook(job, urlst)
+
+        hook({"status": "downloading", "downloaded_bytes": 0, "total_bytes": 1000,
+              "info_dict": {"extractor": "youtube"}})
+
+        meta = [
+            e for e in (q.get_nowait() for _ in range(q.qsize()))
+            if e["type"] == "url_metadata"
+        ]
+        assert len(meta) == 1
+        assert meta[0]["title"] is None
+        assert meta[0]["uploader"] is None
+        assert meta[0]["duration"] is None
+
+
+# ---------------------------------------------------------------------------
+# _make_progress_hook — phase field on progress events (Task 8)
+# ---------------------------------------------------------------------------
+
+class TestRunOnePhaseTransitions:
+    def test_phases_resolving_then_complete(self):
+        from audio_dl_ui import _run_one, JOBS
+        job = _fresh_job()
+        JOBS[job.id] = job
+        urlst = list(job.url_states.values())[0]
+        try:
+            with patch("audio_dl_ui.download_media", return_value=["/tmp/x.mp3"]), \
+                 patch("audio_dl_ui.sanitize_url", side_effect=lambda u: u):
+                _run_one(job, urlst.url)
+            assert urlst.phase == "complete"
+
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_phase_failed_on_error(self):
+        from audio_dl_ui import _run_one, JOBS
+        job = _fresh_job()
+        JOBS[job.id] = job
+        urlst = list(job.url_states.values())[0]
+        try:
+            with patch("audio_dl_ui.download_media", side_effect=RuntimeError("bad")), \
+                 patch("audio_dl_ui.sanitize_url", side_effect=lambda u: u):
+                _run_one(job, urlst.url)
+            assert urlst.phase == "failed"
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_resolving_set_before_sanitize(self):
+        # When sanitize raises, phase is still "resolving" then transitions
+        # to "failed". Easier to assert: resolving is set as the first phase.
+        from audio_dl_ui import _run_one, JOBS
+        job = _fresh_job()
+        JOBS[job.id] = job
+        urlst = list(job.url_states.values())[0]
+        captured = {"phase_at_sanitize": None}
+
+        def fake_sanitize(u):
+            captured["phase_at_sanitize"] = urlst.phase
+            return u
+
+        try:
+            with patch("audio_dl_ui.download_media", return_value=["/tmp/x.mp3"]), \
+                 patch("audio_dl_ui.sanitize_url", side_effect=fake_sanitize):
+                _run_one(job, urlst.url)
+            assert captured["phase_at_sanitize"] == "resolving"
+        finally:
+            JOBS.pop(job.id, None)
+
+
+class TestPhaseField:
+    def test_downloading_tick_carries_phase(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        from audio_dl_ui import _make_progress_hook
+        hook = _make_progress_hook(job, urlst)
+
+        hook({"status": "downloading", "downloaded_bytes": 100, "total_bytes": 1000})
+
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        progress = [e for e in events if e["type"] == "progress"]
+        assert progress and progress[-1]["phase"] == "downloading"
+        assert urlst.phase == "downloading"
+
+    def test_finished_tick_moves_to_postprocessing(self):
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        from audio_dl_ui import _make_progress_hook
+        hook = _make_progress_hook(job, urlst)
+
+        hook({"status": "finished", "downloaded_bytes": 1000, "total_bytes": 1000,
+              "filename": "/tmp/x.m4a.part"})
+
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        progress = [e for e in events if e["type"] == "progress"]
+        assert progress and progress[-1]["phase"] == "postprocessing"
+        assert urlst.phase == "postprocessing"
+
+
+def _mock_httpx_stream(status_code=200, content=b"x" * 100):
+    """Return a context-manager mock matching httpx.stream's interface."""
+    resp = MagicMock(status_code=status_code)
+    resp.iter_bytes = lambda: iter([content])
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=resp)
+    ctx.__exit__ = MagicMock(return_value=False)
+    return ctx
+
+
+class TestThumbnailFetcher:
+    def test_writes_file_on_success(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _fetch_thumbnail, _thumb_dir
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        with patch("audio_dl_ui.httpx.stream",
+                   return_value=_mock_httpx_stream(content=b"\xff\xd8\xff\xe0fakejpeg")):
+            ok = _fetch_thumbnail("job1", 0, "https://img.example/x.jpg")
+        assert ok is True
+        expected = os.path.join(_thumb_dir("job1"), "0.jpg")
+        assert os.path.exists(expected)
+        with open(expected, "rb") as f:
+            assert f.read() == b"\xff\xd8\xff\xe0fakejpeg"
+
+    def test_non_200_returns_false(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _fetch_thumbnail
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+        with patch("audio_dl_ui.httpx.stream",
+                   return_value=_mock_httpx_stream(status_code=404)):
+            ok = _fetch_thumbnail("job1", 0, "https://img.example/x.jpg")
+        assert ok is False
+
+    def test_exception_returns_false(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _fetch_thumbnail
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+        with patch("audio_dl_ui.httpx.stream", side_effect=Exception("boom")):
+            ok = _fetch_thumbnail("job1", 0, "https://img.example/x.jpg")
+        assert ok is False
+
+    def test_atomic_write(self, tmp_path, monkeypatch):
+        """Failure mid-write must not leave a partial file at the target path."""
+        from audio_dl_ui import _fetch_thumbnail, _thumb_dir
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+        with patch("audio_dl_ui.httpx.stream",
+                   return_value=_mock_httpx_stream(content=b"x" * 100)), \
+             patch("audio_dl_ui.os.replace", side_effect=OSError("disk full")):
+            ok = _fetch_thumbnail("job1", 0, "https://img.example/x.jpg")
+        assert ok is False
+        assert not os.path.exists(os.path.join(_thumb_dir("job1"), "0.jpg"))
+
+    def test_size_cap_returns_false_and_no_partial_file(self, tmp_path, monkeypatch):
+        """A hostile/huge response is aborted; no partial file remains."""
+        from audio_dl_ui import _fetch_thumbnail, _thumb_dir, _THUMB_MAX_BYTES
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        # Mock httpx.stream to emit chunks totaling more than the cap
+        class FakeStreamResp:
+            status_code = 200
+            def iter_bytes(self):
+                # Emit 6MB in 1MB chunks — exceeds the 5MB cap
+                chunk = b"x" * (1024 * 1024)
+                for _ in range(6):
+                    yield chunk
+
+        class FakeStreamCtx:
+            def __enter__(self):
+                return FakeStreamResp()
+            def __exit__(self, *args):
+                return False
+
+        with patch("audio_dl_ui.httpx.stream", return_value=FakeStreamCtx()):
+            ok = _fetch_thumbnail("job1", 0, "https://img.example/x.jpg")
+        assert ok is False
+        assert not os.path.exists(os.path.join(_thumb_dir("job1"), "0.jpg"))
+
+
+# ---------------------------------------------------------------------------
+# _make_progress_hook — thumbnail fetcher wiring
+# ---------------------------------------------------------------------------
+
+class TestThumbnailFetcherWiring:
+    def test_metadata_with_thumbnail_dispatches_fetch_and_re_emits(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _make_progress_hook
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+
+        info = {
+            "title": "T", "uploader": "U", "duration": 1,
+            "thumbnails": [{"url": "https://img/x.jpg", "width": 320}],
+        }
+        with patch("audio_dl_ui.httpx.stream",
+                   return_value=_mock_httpx_stream(content=b"\xff\xd8\xff\xe0fake")):
+            hook = _make_progress_hook(job, urlst)
+            hook({"status": "downloading", "downloaded_bytes": 0, "total_bytes": 1000,
+                  "info_dict": info})
+            # Give the fetch thread a moment to complete
+            time.sleep(0.5)
+
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        meta = [e for e in events if e["type"] == "url_metadata"]
+        # Two emissions: first thumbnail_ready=False, then True
+        assert len(meta) >= 2
+        assert meta[0]["thumbnail_ready"] is False
+        assert meta[-1]["thumbnail_ready"] is True
+        assert urlst.thumbnail_ready is True
+
+    def test_no_thumbnails_only_one_metadata_event(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _make_progress_hook
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+
+        info = {"title": "T", "uploader": "U", "duration": 1}  # no thumbs
+        hook = _make_progress_hook(job, urlst)
+        hook({"status": "downloading", "downloaded_bytes": 0, "total_bytes": 1000,
+              "info_dict": info})
+        time.sleep(0.2)
+
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        meta = [e for e in events if e["type"] == "url_metadata"]
+        assert len(meta) == 1
+        assert meta[0]["thumbnail_ready"] is False
+        assert urlst.thumbnail_ready is False
+
+    def test_fetch_failure_emits_thumbnail_ready_false_only(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _make_progress_hook
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+
+        info = {"thumbnails": [{"url": "https://img/x.jpg", "width": 320}]}
+        with patch("audio_dl_ui.httpx.stream", side_effect=Exception("network")):
+            hook = _make_progress_hook(job, urlst)
+            hook({"status": "downloading", "downloaded_bytes": 0, "total_bytes": 1000,
+                  "info_dict": info})
+            time.sleep(0.3)
+
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        meta = [e for e in events if e["type"] == "url_metadata"]
+        # Exactly one event (thumb_ready stays False; no re-emit on failure)
+        assert len(meta) == 1
+        assert meta[0]["thumbnail_ready"] is False
+        assert urlst.thumbnail_ready is False
+
+
+# ---------------------------------------------------------------------------
+# GET /jobs/{job_id}/thumb/{url_idx}.jpg
+# ---------------------------------------------------------------------------
+
+class TestThumbnailEndpoint:
+    def test_404_before_ready(self, tmp_path, monkeypatch):
+        from audio_dl_ui import JOBS
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+        job = _fresh_job()
+        JOBS[job.id] = job
+        try:
+            r = client.get(f"/jobs/{job.id}/thumb/0.jpg{_csrf_query()}")
+            assert r.status_code == 404
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_200_after_file_exists(self, tmp_path, monkeypatch):
+        from audio_dl_ui import JOBS, _thumb_dir
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+        job = _fresh_job()
+        JOBS[job.id] = job
+        try:
+            os.makedirs(_thumb_dir(job.id), exist_ok=True)
+            with open(os.path.join(_thumb_dir(job.id), "0.jpg"), "wb") as f:
+                f.write(b"\xff\xd8\xff\xe0jpeg-bytes")
+            r = client.get(f"/jobs/{job.id}/thumb/0.jpg{_csrf_query()}")
+            assert r.status_code == 200
+            assert r.headers["content-type"].startswith("image/jpeg")
+            assert r.content == b"\xff\xd8\xff\xe0jpeg-bytes"
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_403_missing_token(self, tmp_path, monkeypatch):
+        from audio_dl_ui import JOBS
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+        job = _fresh_job()
+        JOBS[job.id] = job
+        try:
+            r = client.get(f"/jobs/{job.id}/thumb/0.jpg")
+            assert r.status_code == 403
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_403_bad_token(self, tmp_path, monkeypatch):
+        from audio_dl_ui import JOBS
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+        job = _fresh_job()
+        JOBS[job.id] = job
+        try:
+            r = client.get(f"/jobs/{job.id}/thumb/0.jpg?token=wrong")
+            assert r.status_code == 403
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_404_unknown_job(self):
+        r = client.get(f"/jobs/nope/thumb/0.jpg{_csrf_query()}")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _build_snapshot — new rich card fields
+# ---------------------------------------------------------------------------
+
+class TestSnapshotNewFields:
+    def test_snapshot_includes_card_fields(self):
+        from audio_dl_ui import _build_snapshot
+
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        urlst.title = "Some Title"
+        urlst.uploader = "Some Uploader"
+        urlst.duration = 240
+        urlst.thumbnail_ready = True
+        urlst.phase = "downloading"
+        urlst.log.append({"ts": 1.0, "level": "info", "text": "[hls] fragment 1"})
+
+        snap = _build_snapshot(job)
+        u = snap["urls"][0]
+        assert u["title"] == "Some Title"
+        assert u["uploader"] == "Some Uploader"
+        assert u["duration"] == 240
+        assert u["thumbnail_ready"] is True
+        assert u["phase"] == "downloading"
+        assert u["log"] == [{"ts": 1.0, "level": "info", "text": "[hls] fragment 1"}]
+
+
+class TestThumbCleanup:
+    def test_thumb_dir_removed_after_completion_and_disconnect(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _supervise, _thumb_dir, JOBS
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        job = _fresh_job()
+        JOBS[job.id] = job
+        urlst = list(job.url_states.values())[0]
+        urlst.status = "completed"
+        os.makedirs(_thumb_dir(job.id), exist_ok=True)
+        with open(os.path.join(_thumb_dir(job.id), "0.jpg"), "wb") as f:
+            f.write(b"x")
+
+        try:
+            # No subscribers attached → cleanup runs immediately after _supervise
+            from concurrent.futures import Future
+            done: Future = Future()
+            done.set_result(None)
+            _supervise(job, [done])
+            # Job is complete and no subscribers — thumbs cleaned
+            assert not os.path.exists(_thumb_dir(job.id))
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_thumb_dir_kept_while_subscribers_connected(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _supervise, _thumb_dir, JOBS
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        job = _fresh_job()
+        JOBS[job.id] = job
+        urlst = list(job.url_states.values())[0]
+        urlst.status = "completed"
+        os.makedirs(_thumb_dir(job.id), exist_ok=True)
+        with open(os.path.join(_thumb_dir(job.id), "0.jpg"), "wb") as f:
+            f.write(b"x")
+        # Simulate a live subscriber
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        try:
+            from concurrent.futures import Future
+            done: Future = Future()
+            done.set_result(None)
+            _supervise(job, [done])
+            # Subscriber still attached — dir NOT cleaned
+            assert os.path.exists(_thumb_dir(job.id))
+        finally:
+            JOBS.pop(job.id, None)
+
+    def test_cleanup_clears_thumbnail_ready_flags(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _cleanup_thumb_dir, _thumb_dir, JOBS
+        monkeypatch.setattr("audio_dl_ui._THUMB_ROOT", str(tmp_path))
+
+        job = _fresh_job()
+        JOBS[job.id] = job
+        urlst = list(job.url_states.values())[0]
+        urlst.thumbnail_ready = True
+        os.makedirs(_thumb_dir(job.id), exist_ok=True)
+        with open(os.path.join(_thumb_dir(job.id), "0.jpg"), "wb") as f:
+            f.write(b"x")
+        try:
+            _cleanup_thumb_dir(job)
+            assert not os.path.exists(_thumb_dir(job.id))
+            assert urlst.thumbnail_ready is False
+        finally:
+            JOBS.pop(job.id, None)
+
+
+class TestCardCss:
+    def test_card_styles_present_in_rendered_html(self):
+        r = client.get("/")
+        assert r.status_code == 200
+        # Sanity-check the new card style block is in the served HTML
+        assert ".card {" in r.text
+        assert ".card-thumb" in r.text
+        assert ".card-progress" in r.text
+        assert ".card-log" in r.text
+        assert '[data-state="downloading"]' in r.text or '.card[data-state=' in r.text
+
+
+class TestCardTemplate:
+    def test_card_template_in_rendered_html(self):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert '<template id="card-template"' in r.text
+        # Inner card markup elements
+        assert "card-thumb" in r.text
+        assert "card-title" in r.text
+        assert "card-stats" in r.text
+        assert "card-log" in r.text
+
+
+class TestCardJs:
+    def test_js_has_card_render_helpers(self):
+        r = client.get("/")
+        assert r.status_code == 200
+        # Card rendering function names + handlers must be present
+        assert "renderCard" in r.text or "upsertCard" in r.text
+        assert "url_metadata" in r.text
+        assert "url_log" in r.text
+        # The thumbnail URL must include the CSRF token query
+        assert "/thumb/" in r.text
+
+    def test_reveal_button_in_card_template_and_js(self):
+        r = client.get("/")
+        assert r.status_code == 200
+        assert "card-reveal" in r.text
+        assert "/reveal" in r.text  # at least somewhere in JS
