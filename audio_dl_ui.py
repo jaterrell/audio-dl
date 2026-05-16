@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pylint: disable=too-many-lines
 """
 audio_dl_ui.py — One-page web UI for audio_dl.
 
@@ -336,98 +337,263 @@ def _start_job(job: JobState) -> None:
 
 
 # pylint: disable=line-too-long
-_INDEX_HTML = """<!doctype html>
+_INDEX_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="csrf-token" content="__CSRF_TOKEN__">
 <title>audio-dl</title>
+<script>
+// Synchronous boot: set data-theme before paint to avoid FOUC.
+// Slug list duplicated here (rather than referencing window.THEMES) because
+// the THEMES const lives in the deferred end-of-body <script>.
+(function() {{
+  const SLUGS = ['phosphor','rose','moon','dawn','amber','solarized','gruvbox','tokyo','atom','claude'];
+  let chosen = null;
+  try {{
+    const stored = localStorage.getItem('audio-dl-theme');
+    if (stored && SLUGS.indexOf(stored) >= 0) chosen = stored;
+  }} catch (e) {{ /* localStorage unavailable; fall through */ }}
+  if (!chosen) {{
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {{
+      chosen = 'dawn';
+    }} else {{
+      chosen = 'phosphor';
+    }}
+  }}
+  document.documentElement.dataset.theme = chosen;
+}})();
+</script>
 <style>
-  :root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
-  body { max-width: 760px; margin: 2rem auto; padding: 0 1rem; color: #1c1c1e; background: #f7f7f8; }
-  h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-  .sub { color: #6e6e73; font-size: 0.85rem; margin-bottom: 1.5rem; }
-  form { background: #fff; padding: 1.25rem; border-radius: 12px; border: 1px solid #e5e5ea; }
-  label { display: block; font-weight: 600; font-size: 0.85rem; margin: 0.75rem 0 0.3rem; }
-  textarea, input[type=text], select { width: 100%; box-sizing: border-box; padding: 0.5rem 0.6rem; border-radius: 8px; border: 1px solid #d1d1d6; font: inherit; }
-  textarea { resize: vertical; min-height: 5.5rem; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.85rem; }
-  .row { display: flex; gap: 0.75rem; }
-  .row > div { flex: 1; }
-  .checkboxes { display: flex; gap: 1rem; margin-top: 0.5rem; font-size: 0.9rem; }
-  .sliders { display: flex; gap: 1rem; margin-top: 0.5rem; }
-  .sliders > div { flex: 1; }
-  .sliders label { display: flex; justify-content: space-between; align-items: baseline; }
-  .sliders span { font-weight: 400; color: #6e6e73; font-variant-numeric: tabular-nums; }
-  button { background: #007aff; color: white; border: 0; padding: 0.6rem 1.2rem; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 1rem; }
-  button:disabled { background: #c7c7cc; cursor: default; }
-  button.cancel { background: #ff3b30; }
-  #jobpanel { background: #fff; margin-top: 1rem; padding: 1rem 1.25rem; border-radius: 12px; border: 1px solid #e5e5ea; display: none; }
-  #jobpanel.active { display: block; }
-  #jobpanel header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
-  #jobpanel h2 { font-size: 1rem; margin: 0; }
-  .urlrow { padding: 0.6rem 0; border-top: 1px solid #f2f2f4; }
-  .urlrow:first-child { border-top: 0; }
-  .urlrow .top { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
-  .urlrow .url { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.8rem; color: #3a3a3c; word-break: break-all; flex: 1; }
-  .urlrow .status { font-size: 0.8rem; color: #6e6e73; white-space: nowrap; }
-  .urlrow .status.completed { color: #34c759; }
-  .urlrow .status.failed, .urlrow .status.cancelled { color: #ff3b30; }
-  .bar { height: 6px; background: #e5e5ea; border-radius: 3px; margin-top: 0.4rem; overflow: hidden; }
-  .bar > div { height: 100%; background: #007aff; width: 0; transition: width 0.15s linear; }
-  .reveal { font-size: 0.8rem; padding: 0.25rem 0.6rem; margin-top: 0.4rem; background: #e5e5ea; color: #1c1c1e; border-radius: 6px; cursor: pointer; border: 0; }
-  .reveal:hover { background: #d1d1d6; }
+{css_base}
+{css_themes}
 </style>
 </head>
 <body>
-<h1>audio-dl</h1>
-<div class="sub">Paste URLs. Pick a format. Click Download.</div>
+{html_body}
+<script>
+{js}
+</script>
+</body>
+</html>
+"""
 
+_INDEX_CSS_BASE = """  :root {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'Cascadia Code', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  body {
+    max-width: 760px; margin: 2rem auto; padding: 1.5rem;
+    background: var(--bg); color: var(--fg);
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame { white-space: pre; color: var(--frame); line-height: 1.25; }
+  .frame .title { color: var(--accent); font-weight: 400; }
+  .frame .theme-btn {
+    color: var(--accent); background: rgba(255,255,255,0.04);
+    padding: 0 6px; cursor: pointer; user-select: none;
+  }
+  .frame .theme-btn:hover { background: rgba(255,255,255,0.08); }
+  .body-section { padding-left: 2px; margin: 4px 0; }
+  .body-section .field-line { display: flex; align-items: baseline; gap: 4px; }
+  .label { color: var(--label); display: inline-block; min-width: 9ch; }
+  .marker { color: var(--accent); }
+  .accent { color: var(--accent); }
+  .ok { color: var(--ok); }
+  .err { color: var(--err); }
+  .warn { color: var(--warn); }
+  .live { color: var(--live); }
+  .dim { color: var(--dim); }
+  .bar-graph { color: var(--bar); }
+  input.field, textarea.field, select.field {
+    background: transparent; color: var(--fg); border: 0; padding: 0;
+    font: inherit; outline: 0; flex: 1;
+  }
+  textarea.field { resize: vertical; min-height: 3.5rem; width: 100%; }
+  select.field { cursor: pointer; }
+  input[type=range].slider {
+    appearance: none; -webkit-appearance: none;
+    height: 6px; background: var(--frame); border-radius: 3px; outline: 0;
+    flex: 1; max-width: 200px;
+  }
+  input[type=range].slider::-webkit-slider-thumb {
+    appearance: none; -webkit-appearance: none;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--accent); cursor: pointer;
+  }
+  input[type=range].slider::-moz-range-thumb {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--accent); cursor: pointer; border: 0;
+  }
+  button.tui-btn {
+    color: var(--btn-fg); background: var(--accent);
+    border: 0; padding: 2px 12px; font: inherit; font-weight: 600;
+    cursor: pointer;
+  }
+  button.tui-btn:hover { filter: brightness(1.1); }
+  button.tui-btn:disabled { opacity: 0.4; cursor: default; }
+  button.cancel-btn {
+    background: transparent; color: var(--err);
+    border: 1px solid var(--frame); padding: 1px 8px;
+    font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .summary { color: var(--dim); }
+  .live-pulse { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .live-pulse { animation: none; }
+  }
+  .url-row { padding: 4px 0; }
+  .url-row .url { color: var(--fg); word-break: break-all; }
+  .url-row .reveal-btn {
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--frame); padding: 0 6px;
+    font: inherit; font-size: 11px; cursor: pointer; margin-left: 8px;
+  }
+  /* Popover (added in Task 6 — styles defined here for cohesion) */
+  #theme-popover[hidden] { display: none; }
+  #theme-popover {
+    position: fixed; top: 60px; right: 24px; width: 360px;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--frame); border-radius: 6px;
+    padding: 14px; z-index: 100;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+    font-size: 11px;
+  }
+  #theme-popover .pop-header {
+    color: var(--accent); font-weight: 600; margin-bottom: 4px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #theme-popover .pop-sub { color: var(--dim); font-size: 10px; margin-bottom: 12px; }
+  #theme-popover input.pop-search {
+    background: var(--bg); border: 1px solid var(--frame); border-radius: 4px;
+    padding: 5px 8px; color: var(--fg); font: inherit;
+    width: 100%; box-sizing: border-box; margin-bottom: 12px; outline: 0;
+  }
+  #theme-popover input.pop-search:focus { border-color: var(--accent); }
+  #theme-popover .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  #theme-popover .thumb {
+    border-radius: 4px; overflow: hidden; cursor: pointer;
+    border: 2px solid transparent; padding: 0; background: transparent;
+    font: inherit; text-align: left;
+  }
+  #theme-popover .thumb:hover { border-color: var(--frame); }
+  #theme-popover .thumb.active { border-color: var(--accent); }
+  #theme-popover .thumb:focus { outline: 0; border-color: var(--accent); }
+  #theme-popover .thumb .preview {
+    padding: 6px 8px; font-size: 8px; line-height: 1.3; min-height: 48px;
+  }
+  #theme-popover .thumb .name {
+    background: rgba(0,0,0,0.4); padding: 4px 8px; font-size: 9px;
+    color: var(--fg); display: flex; justify-content: space-between;
+  }
+  @media (max-width: 480px) {
+    #theme-popover { left: 10px; right: 10px; width: auto; }
+  }
+"""
+
+_INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
+    --bg: #000;        --fg: #d0d0d0;     --frame: #1a4a1a;  --label: #707070;
+    --accent: #00ff88; --ok: #00ff88;     --err: #ff5555;    --warn: #ffaa33;
+    --live: #00d9ff;   --dim: #555;       --bar: #00d9ff;    --btn-fg: #000;
+  }
+  :root[data-theme="rose"] {
+    --bg: #191724;     --fg: #e0def4;     --frame: #403d52;  --label: #908caa;
+    --accent: #ebbcba; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
+    --live: #c4a7e7;   --dim: #6e6a86;    --bar: #c4a7e7;    --btn-fg: #191724;
+  }
+  :root[data-theme="moon"] {
+    --bg: #232136;     --fg: #e0def4;     --frame: #44415a;  --label: #908caa;
+    --accent: #ea9a97; --ok: #9ccfd8;     --err: #eb6f92;    --warn: #f6c177;
+    --live: #c4a7e7;   --dim: #6e6a86;    --bar: #c4a7e7;    --btn-fg: #232136;
+  }
+  :root[data-theme="dawn"] {
+    --bg: #faf4ed;     --fg: #575279;     --frame: #cecacd;  --label: #797593;
+    --accent: #d7827e; --ok: #56949f;     --err: #b4637a;    --warn: #ea9d34;
+    --live: #907aa9;   --dim: #9893a5;    --bar: #907aa9;    --btn-fg: #faf4ed;
+  }
+  :root[data-theme="amber"] {
+    --bg: #0a0600;     --fg: #ffb000;     --frame: #4a3000;  --label: #8a5a00;
+    --accent: #ffb000; --ok: #ffb000;     --err: #ff4500;    --warn: #ff8800;
+    --live: #ff8800;   --dim: #4a3000;    --bar: #ff8800;    --btn-fg: #0a0600;
+  }
+  :root[data-theme="solarized"] {
+    --bg: #002b36;     --fg: #93a1a1;     --frame: #073642;  --label: #586e75;
+    --accent: #b58900; --ok: #859900;     --err: #dc322f;    --warn: #cb4b16;
+    --live: #2aa198;   --dim: #586e75;    --bar: #268bd2;    --btn-fg: #002b36;
+  }
+  :root[data-theme="gruvbox"] {
+    --bg: #282828;     --fg: #ebdbb2;     --frame: #504945;  --label: #928374;
+    --accent: #fabd2f; --ok: #b8bb26;     --err: #fb4934;    --warn: #fe8019;
+    --live: #8ec07c;   --dim: #665c54;    --bar: #83a598;    --btn-fg: #282828;
+  }
+  :root[data-theme="tokyo"] {
+    --bg: #1a1b26;     --fg: #c0caf5;     --frame: #565f89;  --label: #565f89;
+    --accent: #bb9af7; --ok: #9ece6a;     --err: #f7768e;    --warn: #e0af68;
+    --live: #7dcfff;   --dim: #414868;    --bar: #7dcfff;    --btn-fg: #1a1b26;
+  }
+  :root[data-theme="atom"] {
+    --bg: #282c34;     --fg: #abb2bf;     --frame: #3e4451;  --label: #5c6370;
+    --accent: #c678dd; --ok: #98c379;     --err: #e06c75;    --warn: #d19a66;
+    --live: #61afef;   --dim: #4b5263;    --bar: #61afef;    --btn-fg: #282c34;
+  }
+  :root[data-theme="claude"] {
+    --bg: #181513;     --fg: #efe9d9;     --frame: #4d4641;  --label: #8a7a6a;
+    --accent: #d97757; --ok: #88a86c;     --err: #d5524d;    --warn: #d99155;
+    --live: #e8a866;   --dim: #4d4641;    --bar: #e8a866;    --btn-fg: #181513;
+  }
+"""
+
+_INDEX_HTML_BODY = """<div class="frame">┌─ <span class="title">audio-dl</span> <span class="dim">─────────────── v__VERSION__ ──── </span><span class="theme-btn" id="theme-btn">theme: <span id="theme-current">phosphor</span> ▾</span> <span class="dim">─┐</span></div>
 <form id="dl">
-  <label for="urls">URLs (one per line)</label>
-  <textarea id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea>
-
-  <div class="row">
-    <div>
-      <label for="format">Format</label>
-      <select id="format" name="format">__FORMAT_OPTIONS__</select>
-    </div>
-    <div>
-      <label for="output_dir">Output folder</label>
-      <input id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required>
-    </div>
+  <div class="body-section">
+    <div class="field-line"><span class="label">urls</span><span class="marker">▸</span> <textarea class="field" id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea></div>
+    <div class="field-line"><span class="label">format</span><span class="marker">▸</span> <select class="field" id="format" name="format" style="max-width:180px;">__FORMAT_OPTIONS__</select></div>
+    <div class="field-line"><span class="label">output</span><span class="marker">▸</span> <input class="field" id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required></div>
+    <div class="field-line"><span class="label">jobs</span><span class="marker">▸</span> <input class="slider" id="jobs" name="jobs" type="range" min="1" max="8" value="1"> <span id="jobs_val" class="dim">1</span></div>
+    <div class="field-line"><span class="label">fragments</span><span class="marker">▸</span> <input class="slider" id="fragments" name="fragments" type="range" min="1" max="16" value="4"> <span id="fragments_val" class="dim">4</span></div>
+    <div class="field-line"><span class="label">flags</span><span class="marker">▸</span> <label style="margin-right:12px;"><input type="checkbox" id="playlist" name="playlist"> playlist</label> <label><input type="checkbox" id="force" name="force"> overwrite</label></div>
+    <div class="field-line" style="margin-top:8px;"><span class="label"></span><button type="submit" class="tui-btn" id="submit">[ download ]</button> <span class="dim">⌘↵</span></div>
   </div>
-
-  <div class="checkboxes">
-    <label><input type="checkbox" id="playlist" name="playlist"> Full playlist</label>
-    <label><input type="checkbox" id="force" name="force"> Overwrite existing</label>
-  </div>
-
-  <div class="sliders">
-    <div>
-      <label for="jobs">Parallel jobs <span id="jobs_val">1</span></label>
-      <input id="jobs" name="jobs" type="range" min="1" max="8" value="1">
-    </div>
-    <div>
-      <label for="fragments">Fragments / track <span id="fragments_val">4</span></label>
-      <input id="fragments" name="fragments" type="range" min="1" max="16" value="4">
-    </div>
-  </div>
-
-  <button type="submit" id="submit">Download</button>
 </form>
 
-<section id="jobpanel">
-  <header>
-    <h2>Current job</h2>
-    <button type="button" class="cancel" id="cancel">Cancel</button>
-  </header>
-  <div id="rows"></div>
+<section id="jobpanel" hidden>
+  <div class="frame">├─ <span class="accent">job</span> <span class="dim">─ </span><span class="summary" id="job-summary">0 done · 0 active · 0 fail</span> <span class="dim">─</span> <button type="button" class="cancel-btn" id="cancel">esc</button> <span class="dim">┤</span></div>
+  <div class="body-section" id="rows"></div>
 </section>
 
-<script>
+<div class="frame">└<span class="dim">────────────────────────────────────────┘</span></div>
+
+<div id="theme-popover" hidden role="dialog" aria-label="Switch theme">
+  <div class="pop-header"><span>switch theme</span><span class="dim">⌘T to cycle</span></div>
+  <div class="pop-sub">click to apply · saved to localStorage</div>
+  <input class="pop-search" id="pop-search" placeholder="search…" autocomplete="off">
+  <div class="grid" id="pop-grid"></div>
+</div>
+"""
+
+_INDEX_JS = """const THEMES = [
+  { slug: 'phosphor',  name: 'Phosphor Green',  default: true },
+  { slug: 'rose',      name: 'Rose Pine'                       },
+  { slug: 'moon',      name: 'Rose Pine Moon'                  },
+  { slug: 'dawn',      name: 'Rose Pine Dawn',  light: true    },
+  { slug: 'amber',     name: 'Amber CRT'                       },
+  { slug: 'solarized', name: 'Solarized Dark'                  },
+  { slug: 'gruvbox',   name: 'Gruvbox Dark'                    },
+  { slug: 'tokyo',     name: 'Tokyo Night'                     },
+  { slug: 'atom',      name: 'Atom Dark Pro'                   },
+  { slug: 'claude',    name: 'Claude'                          },
+];
+
 (() => {
   const CSRF_TOKEN = "__CSRF_TOKEN__";
   const $ = (id) => document.getElementById(id);
+
+  // Slider value bindings (sync the displayed number).
   const sliderBind = (id) => {
     const el = $(id), out = $(id + '_val');
     el.addEventListener('input', () => { out.textContent = el.value; });
@@ -438,35 +604,60 @@ _INDEX_HTML = """<!doctype html>
   let currentJobId = null;
   let es = null;
   const rows = $('rows');
+  const summary = $('job-summary');
+  let counts = { done: 0, active: 0, fail: 0 };
+
+  function refreshSummary() {
+    summary.textContent = `${counts.done} done · ${counts.active} active · ${counts.fail} fail`;
+  }
 
   function rowFor(url) {
-    let row = document.getElementById('row-' + btoa(unescape(encodeURIComponent(url))).replace(/=/g, ''));
+    const id = 'row-' + btoa(unescape(encodeURIComponent(url))).replace(/=/g, '');
+    let row = document.getElementById(id);
     if (row) return row;
     row = document.createElement('div');
-    row.className = 'urlrow';
-    row.id = 'row-' + btoa(unescape(encodeURIComponent(url))).replace(/=/g, '');
-    const top = document.createElement('div'); top.className = 'top';
-    const urlDiv = document.createElement('div'); urlDiv.className = 'url';
-    urlDiv.textContent = url;
-    const statusDiv = document.createElement('div'); statusDiv.className = 'status';
-    statusDiv.textContent = 'pending';
-    top.appendChild(urlDiv); top.appendChild(statusDiv);
-    const bar = document.createElement('div'); bar.className = 'bar';
-    bar.appendChild(document.createElement('div'));
-    const files = document.createElement('div'); files.className = 'files';
-    row.appendChild(top); row.appendChild(bar); row.appendChild(files);
+    row.className = 'url-row';
+    row.id = id;
+    // Format: [GLYPH] <url>  <progress>  <reveal-btn>
+    row.innerHTML = `<span class="glyph dim">[--]</span> <span class="url">${escapeHtml(url)}</span> <span class="progress dim"></span><span class="files"></span>`;
     rows.appendChild(row);
     return row;
   }
 
-  function setStatus(row, text, cls) {
-    const s = row.querySelector('.status');
-    s.textContent = text;
-    s.className = 'status ' + (cls || '');
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => (
+      {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+    ));
   }
 
-  function setBar(row, pct) {
-    row.querySelector('.bar > div').style.width = pct + '%';
+  function setGlyph(row, glyph, cls, pulse) {
+    const g = row.querySelector('.glyph');
+    g.textContent = glyph;
+    g.className = 'glyph ' + cls + (pulse ? ' live-pulse' : '');
+    // Track the row's last-known status class so handlers can avoid
+    // double-counting transitions (e.g., url_failed for a row that
+    // was never `active` because cancel hit before url_started).
+    row.dataset.status = cls;
+  }
+
+  function setProgress(row, pct, extras) {
+    const p = row.querySelector('.progress');
+    if (pct == null) {
+      p.textContent = extras || '';
+      p.className = 'progress dim';
+      return;
+    }
+    // Clamp filled to [0, 18] — yt-dlp can report pct > 100 for
+    // fragmented downloads with estimated totals, which would make
+    // (18 - filled) negative and crash String.repeat() with RangeError.
+    const filled = Math.max(0, Math.min(18, Math.round(pct / 100 * 18)));
+    const bar = '▓'.repeat(filled) + '░'.repeat(18 - filled);
+    // bar uses only ▓/░ (HTML-safe). Escape `extras` since it can come
+    // from progressExtras() today but might carry user-controlled text
+    // (filenames, error strings) in future callers.
+    const extrasHtml = extras ? ` <span class="dim">${escapeHtml(extras)}</span>` : '';
+    p.innerHTML = `<span class="bar-graph">${bar}</span> <span class="live">${pct.toFixed(1)}%</span>${extrasHtml}`;
+    p.className = 'progress';
   }
 
   function fmtBytes(b) {
@@ -475,89 +666,105 @@ _INDEX_HTML = """<!doctype html>
     while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
     return b.toFixed(1) + u[i];
   }
-
   function fmtSpeed(b) { return b ? fmtBytes(b) + '/s' : ''; }
-
   function fmtEta(s) {
     if (s == null) return '';
     const m = Math.floor(s / 60), r = s % 60;
-    return `ETA ${m}:${String(r).padStart(2,'0')}`;
+    return `${m}:${String(r).padStart(2,'0')} left`;
+  }
+  function progressExtras(speed, eta) {
+    const bits = [];
+    if (speed) bits.push(fmtSpeed(speed));
+    if (eta != null) bits.push(fmtEta(eta));
+    return bits.join(' · ');
   }
 
   function addRevealButton(row, paths) {
     const filesDiv = row.querySelector('.files');
     filesDiv.innerHTML = '';
-    if (paths.length === 1) {
-      const name = paths[0].split('/').pop();
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'reveal';
-      btn.textContent = `Reveal: ${name}`;
-      btn.onclick = () => fetch('/reveal', {
-        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
-        body: JSON.stringify({path: paths[0]})
-      });
-      filesDiv.appendChild(btn);
-    } else {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'reveal';
-      btn.textContent = `Reveal in Finder (${paths.length} files)`;
-      btn.onclick = () => fetch('/reveal', {
-        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
-        body: JSON.stringify({path: paths[0]})
-      });
-      filesDiv.appendChild(btn);
+    const name = paths[0].split('/').pop();
+    const label = paths.length === 1 ? `↗ ${name}` : `↗ ${paths.length} files`;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'reveal-btn';
+    btn.textContent = label;
+    btn.onclick = () => fetch('/reveal', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
+      body: JSON.stringify({path: paths[0]})
+    });
+    filesDiv.appendChild(btn);
+  }
+
+  function applyUrlState(row, u) {
+    if (u.status === 'pending') {
+      setGlyph(row, '[--]', 'dim');
+      setProgress(row, null, 'queued');
+    } else if (u.status === 'downloading') {
+      setGlyph(row, '[..]', 'live', true);
+      setProgress(row, u.percent, progressExtras(u.speed, u.eta));
+    } else if (u.status === 'completed') {
+      setGlyph(row, '[OK]', 'ok');
+      setProgress(row, 100, '');
+      if (u.paths && u.paths.length) addRevealButton(row, u.paths);
+    } else if (u.status === 'failed') {
+      setGlyph(row, '[!!]', 'err');
+      setProgress(row, null, u.error || 'failed');
+    } else if (u.status === 'cancelled') {
+      setGlyph(row, '[xx]', 'err');
+      setProgress(row, null, 'cancelled');
     }
+  }
+
+  // Derive counts from current row states (the DOM, via dataset.status set
+  // by setGlyph). Idempotent — called after every state transition rather
+  // than incrementing on each event. Avoids drift when a job_snapshot's
+  // states overlap with queued live events from the same connection window
+  // (the SSE broadcast can deliver both for the same URL).
+  function recountFromDOM() {
+    const next = { done: 0, active: 0, fail: 0 };
+    rows.querySelectorAll('.url-row').forEach(row => {
+      const s = row.dataset.status;
+      if (s === 'ok') next.done++;
+      else if (s === 'live') next.active++;
+      else if (s === 'err') next.fail++;
+    });
+    counts = next;
+    refreshSummary();
   }
 
   function handleEvent(ev) {
     if (ev.type === 'job_snapshot') {
-      // Rebuild UI from server state. Sent as the first event on every SSE
-      // connection (v1.3 broadcast architecture) so a refresh / reconnect /
-      // late join can resync without having received the original events.
       ev.urls.forEach(u => {
         const row = rowFor(u.url);
-        setBar(row, u.percent);
-        if (u.status === 'downloading') {
-          const bits = [u.percent.toFixed(1) + '%'];
-          if (u.speed) bits.push(fmtSpeed(u.speed));
-          if (u.eta != null) bits.push(fmtEta(u.eta));
-          setStatus(row, bits.join(' · '));
-        } else if (u.status === 'completed') {
-          setBar(row, 100);
-          setStatus(row, 'completed', 'completed');
-          if (u.paths && u.paths.length) addRevealButton(row, u.paths);
-        } else if (u.status === 'failed') {
-          setStatus(row, u.error || 'failed', 'failed');
-        } else if (u.status === 'cancelled') {
-          setStatus(row, 'cancelled', 'cancelled');
-        } // 'pending' → leave the empty row in place
+        applyUrlState(row, u);
       });
+      recountFromDOM();
       if (ev.complete) {
-        // Job already terminal when we connected; flip UI to done state.
         $('submit').disabled = false;
         $('cancel').disabled = true;
       }
     } else if (ev.type === 'url_started') {
       const row = rowFor(ev.url);
-      setStatus(row, 'downloading…');
+      setGlyph(row, '[..]', 'live', true);
+      setProgress(row, 0, '');
+      recountFromDOM();
     } else if (ev.type === 'progress') {
       const row = rowFor(ev.url);
-      setBar(row, ev.percent);
-      const bits = [`${ev.percent.toFixed(1)}%`];
-      if (ev.speed) bits.push(fmtSpeed(ev.speed));
-      if (ev.eta != null) bits.push(fmtEta(ev.eta));
-      setStatus(row, bits.join(' · '));
+      setGlyph(row, '[..]', 'live', true);
+      setProgress(row, ev.percent, progressExtras(ev.speed, ev.eta));
     } else if (ev.type === 'url_completed') {
       const row = rowFor(ev.url);
-      setBar(row, 100);
-      setStatus(row, 'completed', 'completed');
+      setGlyph(row, '[OK]', 'ok');
+      setProgress(row, 100, '');
       addRevealButton(row, ev.paths);
+      recountFromDOM();
     } else if (ev.type === 'url_failed') {
       const row = rowFor(ev.url);
-      setStatus(row, ev.error || 'failed',
-                ev.error === 'Cancelled' ? 'cancelled' : 'failed');
+      const cancelled = ev.error === 'Cancelled';
+      setGlyph(row, cancelled ? '[xx]' : '[!!]', 'err');
+      setProgress(row, null, ev.error || 'failed');
+      recountFromDOM();
     } else if (ev.type === 'job_completed') {
       $('submit').disabled = false;
       $('cancel').disabled = true;
@@ -572,7 +779,9 @@ _INDEX_HTML = """<!doctype html>
     $('submit').disabled = true;
     $('cancel').disabled = false;
     rows.innerHTML = '';
-    $('jobpanel').classList.add('active');
+    counts = { done: 0, active: 0, fail: 0 };
+    refreshSummary();
+    $('jobpanel').hidden = false;
 
     const body = {
       urls: $('urls').value,
@@ -586,18 +795,21 @@ _INDEX_HTML = """<!doctype html>
     let resp;
     try {
       resp = await fetch('/jobs', {
-        method: 'POST', headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
         body: JSON.stringify(body),
       });
     } catch (err) {
       alert('Failed to start: ' + err);
       $('submit').disabled = false;
+      $('cancel').disabled = true;
       return;
     }
     if (!resp.ok) {
       const detail = await resp.json().catch(() => ({detail: resp.statusText}));
       alert('Error: ' + (detail.detail || resp.statusText));
       $('submit').disabled = false;
+      $('cancel').disabled = true;
       return;
     }
     const {job_id} = await resp.json();
@@ -607,20 +819,211 @@ _INDEX_HTML = """<!doctype html>
       if (!m.data) return;
       try { handleEvent(JSON.parse(m.data)); } catch (e) { console.error(e, m.data); }
     };
-    es.onerror = () => { /* EventSource auto-reconnects; nothing to do */ };
+    es.onerror = () => { /* EventSource auto-reconnects */ };
   });
 
   $('cancel').addEventListener('click', () => {
     if (currentJobId) {
-      fetch('/jobs/' + currentJobId + '/cancel', {method: 'POST', headers: {'X-Audio-DL-Token': CSRF_TOKEN}});
+      fetch('/jobs/' + currentJobId + '/cancel', {
+        method: 'POST',
+        headers: {'X-Audio-DL-Token': CSRF_TOKEN}
+      });
+    }
+  });
+
+  // Reflect the active theme in the header button.
+  function refreshThemeLabel() {
+    const cur = document.documentElement.dataset.theme || 'phosphor';
+    $('theme-current').textContent = cur;
+  }
+  refreshThemeLabel();
+  window.refreshThemeLabel = refreshThemeLabel;  // Picker (Task 6) calls this on change.
+
+  // ── Theme picker popover ────────────────────────────────────────────
+  const popover = $('theme-popover');
+  const popGrid = $('pop-grid');
+  const popSearch = $('pop-search');
+  const themeBtn = $('theme-btn');
+
+  function applyTheme(slug) {
+    document.documentElement.dataset.theme = slug;
+    try { localStorage.setItem('audio-dl-theme', slug); }
+    catch (e) { /* localStorage unavailable; theme is session-only */ }
+    refreshThemeLabel();
+    renderThumbs(popSearch.value);
+  }
+
+  function renderThumbs(filter) {
+    const f = (filter || '').toLowerCase().trim();
+    const cur = document.documentElement.dataset.theme || 'phosphor';
+    popGrid.innerHTML = '';
+    THEMES.filter(t => !f || t.name.toLowerCase().includes(f) || t.slug.toLowerCase().includes(f))
+      .forEach(t => {
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'thumb' + (t.slug === cur ? ' active' : '');
+        el.dataset.slug = t.slug;
+        // Render thumbnail using inline CSS from the theme's :root vars.
+        const styles = getComputedStyleForTheme(t.slug);
+        el.innerHTML = `
+          <div class="preview" style="background:${styles.bg};color:${styles.fg};">
+            <div style="color:${styles.accent}">┌─ ${t.slug} ─┐</div>
+            <div><span style="color:${styles.label}">▸</span> <span style="color:${styles.accent}">downloading</span></div>
+            <div><span style="color:${styles.live}">[..]</span> <span style="color:${styles.live}">73%</span></div>
+            <div><span style="color:${styles.ok}">[OK]</span> done</div>
+          </div>
+          <div class="name" style="background:rgba(0,0,0,0.4);color:${styles.fg};">
+            <span>${t.name}${t.default ? ' <span style="color:'+styles.accent+'">·default</span>' : ''}</span>
+            ${t.slug === cur ? '<span style="color:'+styles.accent+'">✓</span>' : ''}
+          </div>`;
+        el.addEventListener('click', () => { applyTheme(t.slug); closePopover(); });
+        popGrid.appendChild(el);
+      });
+  }
+
+  // Read each theme's computed CSS-vars by temporarily swapping data-theme
+  // on documentElement and reading getComputedStyle. Restores the previous
+  // value before returning. Costs N forced layouts when the popover opens
+  // (10 themes), which is fine — popover open is a rare interaction and
+  // modern browsers handle this in single-digit ms.
+  function getComputedStyleForTheme(slug) {
+    const prev = document.documentElement.dataset.theme;
+    document.documentElement.dataset.theme = slug;
+    const cs = getComputedStyle(document.documentElement);
+    const styles = {
+      bg: cs.getPropertyValue('--bg').trim(), fg: cs.getPropertyValue('--fg').trim(),
+      accent: cs.getPropertyValue('--accent').trim(), ok: cs.getPropertyValue('--ok').trim(),
+      live: cs.getPropertyValue('--live').trim(), label: cs.getPropertyValue('--label').trim(),
+    };
+    document.documentElement.dataset.theme = prev;
+    return styles;
+  }
+
+  function openPopover() {
+    popover.hidden = false;
+    themeBtn.setAttribute('aria-expanded', 'true');
+    renderThumbs('');
+    popSearch.value = '';
+    setTimeout(() => popSearch.focus(), 0);
+  }
+
+  function closePopover() {
+    popover.hidden = true;
+    themeBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  themeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (popover.hidden) openPopover(); else closePopover();
+  });
+
+  popSearch.addEventListener('input', () => renderThumbs(popSearch.value));
+
+  // Click-outside closes the popover (mousedown for snappy close).
+  document.addEventListener('mousedown', (e) => {
+    if (popover.hidden) return;
+    if (popover.contains(e.target) || themeBtn.contains(e.target)) return;
+    closePopover();
+  });
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────
+  const IS_MAC = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const cmdKey = (e) => IS_MAC ? e.metaKey : e.ctrlKey;
+
+  function cycleTheme() {
+    const cur = document.documentElement.dataset.theme || 'phosphor';
+    const idx = THEMES.findIndex(t => t.slug === cur);
+    const next = THEMES[(idx + 1) % THEMES.length];
+    applyTheme(next.slug);
+  }
+
+  document.addEventListener('keydown', (e) => {
+    // esc: close popover (priority) OR cancel job
+    if (e.key === 'Escape') {
+      if (!popover.hidden) {
+        closePopover();
+        e.preventDefault();
+        return;
+      }
+      if (currentJobId && !$('cancel').disabled) {
+        $('cancel').click();
+        e.preventDefault();
+      }
+      return;
+    }
+    // ⌘↵ / Ctrl+↵: submit form (works inside textarea too)
+    // requestSubmit() — not dispatchEvent(new Event('submit')) — so HTML
+    // constraint validation (required, etc.) runs, matching the behavior
+    // of a button click. A synthetic submit event bypasses validation.
+    if (cmdKey(e) && e.key === 'Enter') {
+      if (!$('submit').disabled) {
+        $('dl').requestSubmit();
+        e.preventDefault();
+      }
+      return;
+    }
+    // ⌘T: cycle theme inline (don't open popover)
+    // Note: macOS Safari intercepts ⌘T for "new tab" — preventDefault
+    // wins here only when the page has focus.
+    if (cmdKey(e) && e.key.toLowerCase() === 't') {
+      cycleTheme();
+      e.preventDefault();
+      return;
+    }
+    // ⌘K: open picker with search focused
+    if (cmdKey(e) && e.key.toLowerCase() === 'k') {
+      if (popover.hidden) openPopover();
+      else closePopover();
+      e.preventDefault();
+      return;
+    }
+  });
+
+  // Picker grid keyboard nav: arrow up/down moves focus; enter selects.
+  popover.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const thumbs = Array.from(popGrid.querySelectorAll('.thumb'));
+      if (!thumbs.length) return;
+      const focused = document.activeElement;
+      let idx = thumbs.indexOf(focused);
+      if (idx < 0) idx = 0;
+      else idx = (idx + (e.key === 'ArrowDown' ? 1 : -1) + thumbs.length) % thumbs.length;
+      thumbs[idx].focus();
+      e.preventDefault();
+    } else if (e.key === 'Enter' && document.activeElement.classList.contains('thumb')) {
+      const slug = document.activeElement.dataset.slug;
+      applyTheme(slug);
+      closePopover();
+      e.preventDefault();
     }
   });
 })();
-</script>
-</body>
-</html>
 """
 # pylint: enable=line-too-long
+
+
+def _render_index(token: str, options: str, default_dir: str) -> str:
+    """Assemble the full HTML page from the split constants.
+
+    Substitutions:
+      - {css_base}, {css_themes}, {html_body}, {js} into _INDEX_TEMPLATE
+      - __CSRF_TOKEN__, __FORMAT_OPTIONS__, __DEFAULT_OUTPUT_DIR__,
+        __VERSION__ into the body/JS
+    The escape on default_dir guards against attribute-XSS via launcher arg.
+    """
+    page = _INDEX_TEMPLATE.format(
+        css_base=_INDEX_CSS_BASE,
+        css_themes=_INDEX_CSS_THEMES,
+        html_body=_INDEX_HTML_BODY,
+        js=_INDEX_JS,
+    )
+    return (
+        page
+        .replace("__FORMAT_OPTIONS__", options)
+        .replace("__DEFAULT_OUTPUT_DIR__", html.escape(default_dir, quote=True))
+        .replace("__CSRF_TOKEN__", token)
+        .replace("__VERSION__", __version__)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -651,16 +1054,7 @@ async def index() -> HTMLResponse:
     default_dir = getattr(app.state, "default_output_dir",
                           os.path.expanduser("~/Downloads/audio-dl"))
     token = getattr(app.state, "csrf_token", "")
-    html_doc = (
-        _INDEX_HTML
-        .replace("__FORMAT_OPTIONS__", options)
-        # Escape default_dir before injecting into an HTML attribute value.
-        # Without this, a launcher arg like --output-dir '"><script>...' breaks
-        # markup and creates a self-XSS sink.
-        .replace("__DEFAULT_OUTPUT_DIR__", html.escape(default_dir, quote=True))
-        .replace("__CSRF_TOKEN__", token)
-    )
-    return HTMLResponse(html_doc)
+    return HTMLResponse(_render_index(token, options, default_dir))
 
 
 @app.post("/jobs")

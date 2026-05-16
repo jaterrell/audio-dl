@@ -23,3 +23,4 @@ dist/
 *.jpg
 .gstack/
 .context/
+.superpowers/

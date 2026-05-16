@@ -1,5 +1,58 @@
 # Changelog
 
+## v1.5 — Console UI + theme system (2026-05-15)
+
+Web UI redesign — replaces the macOS-system-light look with a
+TUI-in-browser direction (Console aesthetic) plus a runtime theme
+system with 10 themes selectable via a popover picker.
+
+### Added
+- **Console UI direction.** Real Unicode box-drawing frame
+  (`┌─ ┐ │ ├─ ┤ └─ ┘`), JetBrains Mono font stack, status glyphs
+  (`[OK]`, `[..]`, `[--]`, `[!!]`, `[xx]`), ASCII progress bars
+  (`▓▓▓▓░░░░ 73%`), panel summary header (`X done · Y active · Z fail`).
+  All component CSS goes through `var(--bg)`, `var(--fg)`, etc.
+- **10 themes.** Phosphor Green (default), Rose Pine, Rose Pine Moon,
+  Rose Pine Dawn (light), Amber CRT, Solarized Dark, Gruvbox Dark,
+  Tokyo Night, Atom Dark Pro, Claude. Implemented as
+  `:root[data-theme="<slug>"]` CSS-vars blocks + a JS `THEMES`
+  registry. Theme persists to `localStorage["audio-dl-theme"]`.
+- **Picker popover.** Anchored to the `theme: <slug> ▾` button in
+  the TUI frame header. Search input + thumbnail grid; each
+  thumbnail is a tiny live preview using that theme's actual colors.
+- **Synchronous boot script.** Runs in `<head>` before paint;
+  reads `localStorage` (or `prefers-color-scheme: light` → `dawn`;
+  else `phosphor`) and sets `documentElement.dataset.theme` to
+  avoid FOUC.
+- **Keyboard shortcuts.** `⌘↵` submit, `esc` cancel job (or close
+  popover if open), `⌘T` cycle themes inline, `⌘K` toggle picker
+  with search focused. Picker grid supports arrow-up/down + enter.
+- **Reduced-motion respect.** `[..]` pulse animation disabled
+  under `prefers-reduced-motion: reduce`.
+
+### Changed
+- `audio_dl_ui.py` UI structure refactored from one ~280-line
+  `_INDEX_HTML` string into five split constants
+  (`_INDEX_TEMPLATE`, `_INDEX_CSS_BASE`, `_INDEX_CSS_THEMES`,
+  `_INDEX_HTML_BODY`, `_INDEX_JS`) + `_render_index()` helper.
+- `test_audio_dl_ui.py:870` (the UTF-8-safe `btoa` test) retargeted
+  from `_INDEX_HTML` to `_INDEX_JS`.
+
+### Decisions pinned (see [spec](docs/superpowers/specs/2026-05-14-console-ui-themes.md))
+- TUI-in-browser, not "Linear with a nice icon."
+- JetBrains Mono with `ui-monospace` fallback (no webfont CDN).
+- Real Unicode box-drawing chars, not CSS-styled-to-look-TUI.
+- Stays inline in `audio_dl_ui.py` — no static-files extraction
+  (honors the CLAUDE.md sibling-file convention; no PyInstaller
+  spec change).
+- Drag-drop / clipboard paste / history / format presets / per-URL
+  options bundled together as the deferred "new features" bucket
+  for v1.6+ — out of scope for this slice.
+
+### Test count
+- 150 (was 147) — `TestThemeRendering` adds 3 tests; the
+  refactor + status-glyph rewrite preserve every other test.
+
 ## v1.4 — Automated macOS release pipeline (2026-05-13)
 
 Phase 3c + Phase 4 of the macOS .app roadmap, shipped as one slice:

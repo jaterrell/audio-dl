@@ -28,7 +28,7 @@ Requirements:
 """
 from __future__ import annotations
 
-__version__ = "1.4"
+__version__ = "1.5"
 
 import argparse
 from collections.abc import Callable

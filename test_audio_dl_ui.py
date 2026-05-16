@@ -3,6 +3,7 @@
 # pylint: disable=too-many-lines
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
 import json
+import re
 import threading
 import time
 
@@ -866,12 +867,11 @@ class TestBtoaUnicodeSafe:
     wrapping with unescape(encodeURIComponent(...)) makes it UTF-8 safe."""
 
     def test_js_uses_utf8_safe_btoa(self):
-        # Structural assertion on the embedded HTML/JS.
-        from audio_dl_ui import _INDEX_HTML
-        assert "btoa(unescape(encodeURIComponent(url)))" in _INDEX_HTML
+        # Structural assertion on the embedded JS (post-refactor: was _INDEX_HTML).
+        from audio_dl_ui import _INDEX_JS
+        assert "btoa(unescape(encodeURIComponent(url)))" in _INDEX_JS
         # No remaining raw btoa(url) without the wrap.
-        # (A simple grep for "btoa(url)" should NOT match.)
-        assert "btoa(url)" not in _INDEX_HTML
+        assert "btoa(url)" not in _INDEX_JS
 
 
 class TestBrowserHostRewrite:
@@ -1106,3 +1106,48 @@ class TestShowMacosDialog:
             raise ui.subprocess.TimeoutExpired(cmd="osascript", timeout=60)
         monkeypatch.setattr(ui.subprocess, "run", raise_timeout)
         assert ui._show_macos_dialog("t", "m") is False
+
+
+# ---------------------------------------------------------------------------
+# v1.5 theme system — CSS cascade + JS registry tests
+# ---------------------------------------------------------------------------
+
+class TestThemeRendering:
+    """Theme cascade is 10 :root[data-theme="<slug>"] blocks. The JS THEMES
+    registry must enumerate the same 10 slugs in the same order. Drift between
+    the two would silently break the picker."""
+
+    EXPECTED_SLUGS = [
+        "phosphor", "rose", "moon", "dawn", "amber",
+        "solarized", "gruvbox", "tokyo", "atom", "claude",
+    ]
+
+    def test_all_ten_theme_blocks_present(self):
+        """_INDEX_CSS_THEMES contains exactly 10 :root[data-theme="<slug>"] selectors,
+        in the same order as the JS THEMES registry (Task 3)."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        found = re.findall(r':root\[data-theme="([^"]+)"\]', _INDEX_CSS_THEMES)
+        assert found == self.EXPECTED_SLUGS, (
+            f"Expected {self.EXPECTED_SLUGS}, found {found}"
+        )
+
+    def test_js_themes_registry_matches_css_slugs(self):
+        """JS THEMES array's slugs appear in the same order as the CSS blocks."""
+        from audio_dl_ui import _INDEX_JS
+        slugs = re.findall(r"slug:\s*'([^']+)'", _INDEX_JS)
+        assert slugs == self.EXPECTED_SLUGS, (
+            f"JS slugs {slugs} drift from CSS slugs {self.EXPECTED_SLUGS}"
+        )
+
+    def test_js_default_theme_is_phosphor(self):
+        """Exactly one theme entry has default: true, and it's phosphor."""
+        from audio_dl_ui import _INDEX_JS
+        # Match a registry entry where default: true follows the slug.
+        # Allow any chars except 'slug:' between slug and default within the entry.
+        defaults = re.findall(
+            r"slug:\s*'([^']+)'[^}]*default:\s*true",
+            _INDEX_JS,
+        )
+        assert defaults == ['phosphor'], (
+            f"Expected exactly ['phosphor'] as default, got {defaults}"
+        )
