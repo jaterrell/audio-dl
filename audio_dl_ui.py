@@ -536,7 +536,6 @@ _INDEX_CSS_BASE = """  :root {
   }
   @media (prefers-reduced-motion: reduce) {
     .live-pulse { animation: none; }
-    #status-indicator.spinning { animation: none; }
   }
   /* ── URL rows: grid for columnar alignment ── */
   .url-row {
@@ -562,15 +561,17 @@ _INDEX_CSS_BASE = """  :root {
   }
   /* ── Stats subpanel inside OUTPUT panel ── */
   #stats-panel {
-    padding-left: 1ch; padding-top: 2px; padding-bottom: 2px;
-    font-size: 12px; color: var(--dim);
-    border-left: 1px solid var(--frame);
-    margin: 2px 0 4px 0;
-    display: flex; flex-direction: column; gap: 1px;
+    font-size: 12px;
+    margin-bottom: 2px;
   }
-  .stats-row { display: flex; gap: 1ch; }
+  #stats-panel .stats-frame { margin-bottom: 0; }
+  .stats-body {
+    padding: 1px 0 2px 1ch;
+    display: flex; flex-direction: column; gap: 0;
+  }
+  .stats-row { display: flex; gap: 1ch; padding: 0; }
   .stats-label { color: var(--label); min-width: 9ch; }
-  .stats-val { color: var(--fg); min-width: 3ch; text-align: right; }
+  .stats-val { color: var(--dim); min-width: 3ch; text-align: right; }
   .stats-val.active { color: var(--live); }
   .stats-val.done { color: var(--ok); }
   .stats-val.failed { color: var(--err); }
@@ -705,10 +706,13 @@ _INDEX_HTML_BODY = """<div id="status-bar">
 <div class="panel">
   <div class="frame"><span class="frame-corner">┌─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">OUTPUT</span><span class="pt-bracket"> ]</span></span><span class="frame-fill"></span><button type="button" class="cancel-btn" id="cancel" disabled>[ esc ] cancel</button><span class="frame-fill" style="max-width:1ch;"></span><span class="frame-corner">─┐</span></div>
   <div id="stats-panel">
-    <div class="stats-row"><span class="stats-label">queued</span><span class="stats-val" id="stat-queued">0</span></div>
-    <div class="stats-row"><span class="stats-label">active</span><span class="stats-val active" id="stat-active">0</span></div>
-    <div class="stats-row"><span class="stats-label">done</span><span class="stats-val done" id="stat-done">0</span></div>
-    <div class="stats-row"><span class="stats-label">failed</span><span class="stats-val failed" id="stat-failed">0</span></div>
+    <div class="frame stats-frame"><span class="frame-corner">├─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">STATS</span><span class="pt-bracket"> ]</span></span><span class="frame-fill"></span><span class="frame-corner">┤</span></div>
+    <div class="stats-body">
+      <div class="stats-row"><span class="stats-label">queued</span><span class="stats-val" id="stat-queued">0</span></div>
+      <div class="stats-row"><span class="stats-label">active</span><span class="stats-val active" id="stat-active">0</span></div>
+      <div class="stats-row"><span class="stats-label">done</span><span class="stats-val done" id="stat-done">0</span></div>
+      <div class="stats-row"><span class="stats-label">failed</span><span class="stats-val failed" id="stat-failed">0</span></div>
+    </div>
   </div>
   <section id="jobpanel" hidden>
     <div class="frame"><span class="frame-corner">├─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">JOBS</span><span class="pt-bracket"> ]</span></span><span class="dim" style="margin-left:1ch;">─</span> <span class="summary" id="job-summary">0 done · 0 active · 0 fail</span><span class="frame-fill"></span><span class="frame-corner">┤</span></div>
@@ -774,9 +778,21 @@ _INDEX_JS = """const THEMES = [
   let spinInterval = null;
   let spinFrame = 0;
 
+  const reducedMotion = window.matchMedia
+    ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    : false;
+
   function startSpinner() {
     if (spinInterval) return;
     spinFrame = 0;
+    if (reducedMotion) {
+      // No animation — show a static active indicator.
+      const label = counts.active > 0
+        ? ` downloading ${counts.active} / ${counts.done + counts.active}`
+        : '';
+      statusIndicator.textContent = '◐' + label;
+      return;
+    }
     spinInterval = setInterval(() => {
       spinFrame = (spinFrame + 1) % SPIN_FRAMES.length;
       const label = counts.active > 0
@@ -817,9 +833,10 @@ _INDEX_JS = """const THEMES = [
   function updateStatsMeta() {
     const { done, active, fail } = counts;
     const theme = document.documentElement.dataset.theme || 'phosphor';
-    const jobs = $('jobs') ? $('jobs').value : '1';
+    const jobs = $('jobs') ? parseInt($('jobs').value, 10) : 1;
     const frags = $('fragments') ? $('fragments').value : '4';
-    sbMetaText.textContent = `${jobs} jobs · ${frags} frags · ${theme}`;
+    const jobLabel = jobs === 1 ? '1 job' : `${jobs} jobs`;
+    sbMetaText.textContent = `${jobLabel} · ${frags} frags · ${theme}`;
     $('stat-queued').textContent = String(counts.queued);
     $('stat-active').textContent = String(active);
     $('stat-done').textContent = String(done);
