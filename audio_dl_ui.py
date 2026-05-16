@@ -896,19 +896,140 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
     --bg: #1a1b26;     --fg: #c0caf5;     --frame: #565f89;  --label: #565f89;
     --accent: #bb9af7; --ok: #9ece6a;     --err: #f7768e;    --warn: #e0af68;
     --live: #7dcfff;   --dim: #414868;    --bar: #7dcfff;    --btn-fg: #1a1b26;
-    --glow: 0 0 6px var(--accent);
+    --glow: 0 0 10px var(--accent), 0 0 22px var(--accent);
+    /* Structural identity: cyberpunk neon — double borders, glow, dense typography */
+    --frame-rule-style: double;
+    --frame-rule-width: 3px;
+    --frame-rule-color: var(--frame);
+    --line-height: 1.35;
+    --title-transform: uppercase;
+    --title-letterspacing: 0.15em;
+    --title-weight: 700;
+    --section-divider: ' \25b8 ';
+    --idle-cursor-char: '\258c';
+  }
+  /* Tokyo Night — double-line frame fills */
+  :root[data-theme="tokyo"] .frame .frame-fill {
+    border-bottom: 3px double var(--frame);
+  }
+  /* Tokyo Night — chromatic aberration on the app title in the status bar */
+  :root[data-theme="tokyo"] #status-bar .sb-app {
+    text-shadow: -1px 0 #ff00ea, 1px 0 #00ffff, 0 0 12px var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    font-weight: 700;
+  }
+  /* Tokyo Night — intense neon glow on panel title accent labels */
+  :root[data-theme="tokyo"] .frame .pt-label {
+    text-shadow: -1px 0 #ff00ea, 1px 0 #00ffff, 0 0 12px var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+  }
+  /* Tokyo Night — uppercase panel title labels */
+  :root[data-theme="tokyo"] .frame .panel-title {
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
   }
   :root[data-theme="atom"] {
     --bg: #282c34;     --fg: #abb2bf;     --frame: #3e4451;  --label: #5c6370;
     --accent: #c678dd; --ok: #98c379;     --err: #e06c75;    --warn: #d19a66;
     --live: #61afef;   --dim: #4b5263;    --bar: #61afef;    --btn-fg: #282c34;
     --glow: 0 0 6px var(--accent);
+    /* Structural identity: code editor — gutter, tab-style panel titles, tight spacing */
+    --line-height: 1.4;
+    --pane-padding: 0.5em 0.8em;
+    --section-divider: ' :: ';
+    --idle-cursor-char: '|';
+  }
+  /* Atom — line-number gutter on the form field lines */
+  :root[data-theme="atom"] .body-section {
+    counter-reset: lineno;
+  }
+  :root[data-theme="atom"] .body-section .field-line {
+    counter-increment: lineno;
+    position: relative;
+    padding-left: 3.5em;
+  }
+  :root[data-theme="atom"] .body-section .field-line::before {
+    content: counter(lineno);
+    position: absolute;
+    left: 0;
+    width: 2.5em;
+    text-align: right;
+    color: var(--dim);
+    border-right: 1px solid var(--frame);
+    padding-right: 0.5em;
+    font-style: normal;
+    pointer-events: none;
+  }
+  /* Atom — editor-tab style for panel titles: bottom-border accent underline */
+  :root[data-theme="atom"] .frame .panel-title {
+    background: rgba(198,120,221,0.08);
+    padding: 0 0.6em;
+    border-bottom: 2px solid var(--accent);
+    font-size: 13px;
+    letter-spacing: 0.04em;
+  }
+  /* Atom — monospace italic on accent-colored spans (syntax-highlight feel) */
+  :root[data-theme="atom"] .accent {
+    font-style: italic;
   }
   :root[data-theme="claude"] {
     --bg: #181513;     --fg: #efe9d9;     --frame: #4d4641;  --label: #8a7a6a;
     --accent: #d97757; --ok: #88a86c;     --err: #d5524d;    --warn: #d99155;
     --live: #e8a866;   --dim: #4d4641;    --bar: #e8a866;    --btn-fg: #181513;
-    --glow: 0 0 6px var(--accent);
+    --glow: 0 0 12px rgba(217,119,87,0.45);
+    /* Structural identity: warm, considered — no terminal chrome, generous spacing */
+    --line-height: 1.7;
+    --pane-padding: 1.2em 1.6em;
+    --section-divider: '  \00b7  ';
+  }
+  /* Claude — remove terminal frame chrome: hide corner glyphs, drop frame-fill border */
+  :root[data-theme="claude"] .frame .frame-corner {
+    display: none;
+  }
+  :root[data-theme="claude"] .frame .frame-fill {
+    border-bottom: none;
+    margin-bottom: 0;
+  }
+  /* Claude — replace hard border on .frame with a soft dotted underline */
+  :root[data-theme="claude"] .frame {
+    border: none;
+    padding-bottom: 0.3em;
+    border-bottom: 1px dotted var(--label);
+  }
+  /* Claude — panels: no border, warm tint, rounded card feel */
+  :root[data-theme="claude"] .panel {
+    border: none;
+    padding: 1.2em 1.6em;
+    background: rgba(217,119,87,0.03);
+    border-radius: 8px;
+  }
+  /* Claude — asymmetric two-pane layout on wide viewports (output gets more room) */
+  @media (min-width: 1200px) {
+    :root[data-theme="claude"] .panes {
+      grid-template-columns: 1fr 1.6fr;
+    }
+  }
+  /* Claude — large, light app title in the status bar */
+  :root[data-theme="claude"] #status-bar .sb-app {
+    font-size: 1.05em;
+    font-weight: 300;
+    letter-spacing: 0.05em;
+  }
+  /* Claude — hide the blinking idle cursor (calm, not nervous) */
+  :root[data-theme="claude"] #idle-cursor {
+    display: none;
+  }
+  /* Claude — pill-shaped download button (warm, rounded) */
+  :root[data-theme="claude"] button.tui-btn {
+    border-radius: 999px;
+    padding: 0.4em 1.2em;
+  }
+  /* Claude — softer panel-title label (no harsh brackets feel) */
+  :root[data-theme="claude"] .frame .panel-title {
+    letter-spacing: 0.06em;
+    font-size: 13px;
   }
 """
 

@@ -1123,12 +1123,16 @@ class TestThemeRendering:
     ]
 
     def test_all_ten_theme_blocks_present(self):
-        """_INDEX_CSS_THEMES contains exactly 10 :root[data-theme="<slug>"] selectors,
-        in the same order as the JS THEMES registry (Task 3)."""
+        """_INDEX_CSS_THEMES contains :root[data-theme="<slug>"] selectors for all
+        10 themes, in the same order as the JS THEMES registry. Each slug may appear
+        multiple times (once for the var block, additional times for scoped descendant
+        override rules) — we check the first-occurrence order only."""
         from audio_dl_ui import _INDEX_CSS_THEMES
         found = re.findall(r':root\[data-theme="([^"]+)"\]', _INDEX_CSS_THEMES)
-        assert found == self.EXPECTED_SLUGS, (
-            f"Expected {self.EXPECTED_SLUGS}, found {found}"
+        # Deduplicate while preserving first-occurrence order (dict insertion order).
+        unique_ordered = list(dict.fromkeys(found))
+        assert unique_ordered == self.EXPECTED_SLUGS, (
+            f"Expected {self.EXPECTED_SLUGS}, found unique-ordered {unique_ordered}"
         )
 
     def test_js_themes_registry_matches_css_slugs(self):
