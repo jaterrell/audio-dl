@@ -395,6 +395,17 @@ class TestBuildYdlOptsCommon:
         )
         assert opts["concurrent_fragment_downloads"] == 8
 
+    def test_remote_components_enables_ejs_github(self):
+        """yt-dlp's YouTube extractor requires a JS challenge solver
+        (introduced in the EJS work). Without a local runtime (deno) or
+        the ejs:github remote component, downloads degrade to a
+        128kbps-opus-only format pool with noisy "Signature solving
+        failed" / "n challenge solving failed" warnings on every URL.
+        Setting remote_components=['ejs:github'] unconditionally fixes
+        this; harmless for non-YouTube extractors that ignore the key."""
+        opts = _build_ydl_opts(media_format="mp3", **DEFAULT_OPTS)
+        assert opts.get("remote_components") == ["ejs:github"]
+
 
 # ---------------------------------------------------------------------------
 # _build_ydl_opts — progress_hooks

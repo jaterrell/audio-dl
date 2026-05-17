@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.7.1 — Enable yt-dlp EJS challenge solver
+
+Single-line yt-dlp option fix for YouTube downloads.
+
+yt-dlp's YouTube extractor now requires a JavaScript runtime (or a
+remote-fetched solver) to compute the signature and `n` challenge
+values that gate format URLs. Without either, every YouTube download
+emits two warnings — *"Signature solving failed"* and *"n challenge
+solving failed"* — and degrades the available format pool to a single
+128kbps opus webm. The warnings flow straight into v1.6's rich-card
+log tail, making every YouTube download look broken.
+
+Setting `remote_components=['ejs:github']` in `_build_ydl_opts` tells
+yt-dlp to fetch the official solver lib from GitHub once per session.
+Warnings disappear; the full audio format pool comes back (verified:
+8 formats discovered vs 1 on the broken path). Harmless for
+non-YouTube extractors that ignore the key.
+
 ## v1.7 — Per-theme card structural variations
 
 Cards now express each cluster's structural identity, not just its color palette.

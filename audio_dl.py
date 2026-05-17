@@ -28,7 +28,7 @@ Requirements:
 """
 from __future__ import annotations
 
-__version__ = "1.7"
+__version__ = "1.7.1"
 
 import argparse
 from collections.abc import Callable
@@ -280,6 +280,15 @@ def _build_ydl_opts(  # pylint: disable=too-many-arguments,too-many-locals,too-m
         "postprocessors": postprocessors,
         "keepvideo": False,
         "concurrent_fragment_downloads": concurrent_fragments,
+        # YouTube's JS challenge solver (introduced in yt-dlp's EJS work)
+        # needs a JS runtime to compute the signature/n-challenge values.
+        # Without a runtime OR a remote-fetched solver, yt-dlp falls back to
+        # a degraded format pool (typically just opus webm, ~128kbps) and
+        # emits "Signature solving failed" / "n challenge solving failed"
+        # warnings on every YouTube download. Enabling ejs:github lets
+        # yt-dlp fetch the official solver lib once per session and unlocks
+        # the full format pool. Harmless for non-YouTube extractors.
+        "remote_components": ["ejs:github"],
     }
     if is_video:
         opts["merge_output_format"] = media_format
