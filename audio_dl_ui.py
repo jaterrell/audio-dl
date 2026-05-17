@@ -1590,6 +1590,186 @@ _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
       padding: 0 1ch; height: 1.6em; width: auto;
     }
   }
+
+  /* ===========================================================
+     v1.7 — Per-theme card structural variations (cluster-scoped)
+     Phosphor uses base .card rules unchanged.
+     Do NOT override at the cluster level:
+       - display: rules on .card-progress / .card-log (state CSS owns these)
+       - --ok / --err on .card-badge (state CSS owns these)
+       - animation properties on .card-badge::after
+     =========================================================== */
+
+  /* --- VINTAGE cluster (amber · solarized · gruvbox) ---------- */
+  [data-theme="amber"] .card,
+  [data-theme="solarized"] .card,
+  [data-theme="gruvbox"] .card {
+    border-style: dotted;
+    letter-spacing: 0.04em;
+  }
+  [data-theme="amber"] .card-title,
+  [data-theme="solarized"] .card-title,
+  [data-theme="gruvbox"] .card-title,
+  [data-theme="amber"] .card-meta,
+  [data-theme="solarized"] .card-meta,
+  [data-theme="gruvbox"] .card-meta {
+    text-transform: uppercase;
+  }
+  [data-theme="amber"] .card-thumb,
+  [data-theme="solarized"] .card-thumb,
+  [data-theme="gruvbox"] .card-thumb {
+    border-style: dotted;
+  }
+  [data-theme="amber"] .card-thumb img,
+  [data-theme="solarized"] .card-thumb img,
+  [data-theme="gruvbox"] .card-thumb img {
+    filter: grayscale(0.7) contrast(1.2);
+  }
+  [data-theme="amber"] .card-bar > span,
+  [data-theme="solarized"] .card-bar > span,
+  [data-theme="gruvbox"] .card-bar > span {
+    background-image: repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.35) 0 2px,
+      transparent 2px 5px
+    );
+  }
+  [data-theme="amber"] .card-log-line::before,
+  [data-theme="solarized"] .card-log-line::before,
+  [data-theme="gruvbox"] .card-log-line::before {
+    content: "> ";
+    color: var(--dim);
+  }
+
+  /* --- EDITORIAL cluster (rose · moon · dawn) ----------------- */
+  [data-theme="rose"] .card,
+  [data-theme="moon"] .card,
+  [data-theme="dawn"] .card {
+    border: none;
+    border-bottom: 1px solid var(--frame);
+    padding: 16px 14px;
+    background: transparent;
+  }
+  [data-theme="rose"] .card-title,
+  [data-theme="moon"] .card-title,
+  [data-theme="dawn"] .card-title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 1.05em;
+    font-weight: 700;
+  }
+  [data-theme="rose"] .card-meta,
+  [data-theme="moon"] .card-meta,
+  [data-theme="dawn"] .card-meta {
+    font-style: italic;
+  }
+  [data-theme="rose"] .card-bar,
+  [data-theme="moon"] .card-bar,
+  [data-theme="dawn"] .card-bar {
+    height: 3px;
+    border: none;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--frame) 50%, transparent);
+  }
+  [data-theme="rose"] .card-log-line,
+  [data-theme="moon"] .card-log-line,
+  [data-theme="dawn"] .card-log-line {
+    font-style: italic;
+    font-size: 0.85em;
+  }
+  /* Dawn (editorial light) — hide thumb entirely, collapse grid */
+  [data-theme="dawn"] .card {
+    grid-template-columns: 1fr;
+  }
+  [data-theme="dawn"] .card-thumb {
+    display: none;
+  }
+
+  /* --- MODERN cluster (tokyo · atom · claude) ----------------- */
+  [data-theme="tokyo"] .card,
+  [data-theme="atom"] .card,
+  [data-theme="claude"] .card {
+    border-radius: 10px;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto;
+    gap: 10px;
+  }
+  [data-theme="tokyo"] .card-thumb,
+  [data-theme="atom"] .card-thumb,
+  [data-theme="claude"] .card-thumb {
+    width: 100%;
+    height: 100px;
+    border-radius: 6px;
+    position: relative;
+  }
+  [data-theme="tokyo"] .card-thumb::after,
+  [data-theme="atom"] .card-thumb::after,
+  [data-theme="claude"] .card-thumb::after {
+    content: attr(data-duration);
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(0, 0, 0, 0.5);
+    color: #fff;
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 0.7em;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  [data-theme="tokyo"] .card-thumb[data-duration=""]::after,
+  [data-theme="atom"] .card-thumb[data-duration=""]::after,
+  [data-theme="claude"] .card-thumb[data-duration=""]::after {
+    display: none;
+  }
+  /* Modern cluster: .card-head becomes a 2-row CSS Grid so .card-meta
+     actually sits ABOVE .card-title (label-above-title product-card
+     pattern). The base .card-head is display:flex (single row) — an
+     `order: -1` on .card-meta only reshuffles inline within that row,
+     it does NOT promote meta to its own row. Grid placement does.
+     The badge spans both rows on its own column to keep its right-edge
+     position from the base layout. (P2 codex review finding on PR #19.) */
+  [data-theme="tokyo"] .card-head,
+  [data-theme="atom"] .card-head,
+  [data-theme="claude"] .card-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    column-gap: 8px;
+    row-gap: 2px;
+    align-items: baseline;
+  }
+  [data-theme="tokyo"] .card-meta,
+  [data-theme="atom"] .card-meta,
+  [data-theme="claude"] .card-meta {
+    grid-column: 1;
+    grid-row: 1;
+    text-transform: uppercase;
+    font-size: 0.7em;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  [data-theme="tokyo"] .card-title,
+  [data-theme="atom"] .card-title,
+  [data-theme="claude"] .card-title {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  [data-theme="tokyo"] .card-badge,
+  [data-theme="atom"] .card-badge,
+  [data-theme="claude"] .card-badge {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    margin-left: 0;
+  }
+  [data-theme="tokyo"] .card-bar,
+  [data-theme="atom"] .card-bar,
+  [data-theme="claude"] .card-bar {
+    height: 3px;
+    border: none;
+    border-radius: 2px;
+  }
 """
 
 _INDEX_HTML_BODY = """<div id="status-bar">
@@ -1877,6 +2057,7 @@ _INDEX_JS = """const THEMES = [
       el.querySelector('.card-title').textContent = url;
       el.querySelector('.card-meta').textContent = '';
     }
+    el.querySelector('.card-thumb').setAttribute('data-duration', st.duration ? formatDuration(st.duration) : '');
 
     // Badge
     el.querySelector('.card-badge').textContent = phaseBadge(st.phase);

@@ -1168,6 +1168,191 @@ class TestThemeRendering:
 
 
 # ---------------------------------------------------------------------------
+# Per-theme card structural variations (v1.7)
+# ---------------------------------------------------------------------------
+
+class TestCardClusterOverrides:
+    """v1.7 extends the v1.6 per-theme override pattern to .card selectors.
+    Cluster CSS lives at the tail of _INDEX_CSS_THEMES as grouped selectors
+    per cluster. Phosphor stays byte-identical to v1.6 (no .card override)."""
+
+    def test_phosphor_has_no_card_override(self):
+        """Phosphor cards stay byte-identical to v1.6 — there is no
+        `[data-theme="phosphor"] .card` rule anywhere."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        assert re.search(
+            r'\[data-theme="phosphor"\]\s*\.card', _INDEX_CSS_THEMES
+        ) is None, "Phosphor must remain the v1.6 reference (no .card override)"
+
+    def test_vintage_cluster_card_block_present(self):
+        """Vintage cluster (amber/solarized/gruvbox) has a grouped .card
+        selector — exactly three themes grouped together."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        pattern = (
+            r'\[data-theme="amber"\]\s*\.card,\s*'
+            r'\[data-theme="solarized"\]\s*\.card,\s*'
+            r'\[data-theme="gruvbox"\]\s*\.card'
+        )
+        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
+            "Vintage cluster grouped .card selector missing"
+        )
+
+    def test_editorial_cluster_card_block_present(self):
+        """Editorial cluster (rose/moon/dawn) has a grouped .card selector."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        pattern = (
+            r'\[data-theme="rose"\]\s*\.card,\s*'
+            r'\[data-theme="moon"\]\s*\.card,\s*'
+            r'\[data-theme="dawn"\]\s*\.card'
+        )
+        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
+            "Editorial cluster grouped .card selector missing"
+        )
+
+    def test_dawn_card_thumb_hidden(self):
+        """Dawn (editorial light) hides .card-thumb entirely."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        pattern = (
+            r'\[data-theme="dawn"\]\s*\.card-thumb\s*\{[^}]*display:\s*none'
+        )
+        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
+            "Dawn must hide .card-thumb (display: none)"
+        )
+
+    def test_dawn_card_grid_collapses_to_single_column(self):
+        """When the thumb is hidden, the card grid must collapse to 1fr
+        to avoid a phantom thumbnail column."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        pattern = (
+            r'\[data-theme="dawn"\]\s*\.card\s*\{[^}]*grid-template-columns:\s*1fr'
+        )
+        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
+            "Dawn .card must override grid-template-columns to 1fr"
+        )
+
+    def test_modern_cluster_card_block_present(self):
+        """Modern cluster (tokyo/atom/claude) has a grouped .card selector."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        pattern = (
+            r'\[data-theme="tokyo"\]\s*\.card,\s*'
+            r'\[data-theme="atom"\]\s*\.card,\s*'
+            r'\[data-theme="claude"\]\s*\.card'
+        )
+        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
+            "Modern cluster grouped .card selector missing"
+        )
+
+    def test_modern_cluster_has_duration_overlay(self):
+        """Modern cluster renders duration via .card-thumb::after with
+        attr(data-duration). Look for the ::after rule on at least one of
+        the three modern themes — the spec uses a grouped selector covering
+        all three, but a per-theme split is also acceptable."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        pattern = r'\[data-theme="(?:tokyo|atom|claude)"\]\s*\.card-thumb::after'
+        matches = re.findall(pattern, _INDEX_CSS_THEMES)
+        assert len(matches) >= 3, (
+            f"Expected modern cluster .card-thumb::after on tokyo, atom, claude — "
+            f"found {len(matches)} match(es): {matches}"
+        )
+        # Verify attr(data-duration) is the content
+        assert re.search(
+            r'\.card-thumb::after[^}]*content:\s*attr\(data-duration\)',
+            _INDEX_CSS_THEMES,
+        ) is not None, "::after rule should use content: attr(data-duration)"
+
+    def test_modern_cluster_meta_above_title_via_grid(self):
+        """Modern cluster lifts .card-meta above .card-title by switching
+        .card-head from flex to CSS grid and placing meta on row 1, title
+        on row 2. An earlier attempt used `order: -1` on .card-meta alone;
+        that does NOT work because the base .card-head is a single-row
+        display:flex container — `order` only reshuffles inline, it does
+        not promote a child to its own row. Grid placement does. (P2
+        codex review finding on PR #19.)"""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        # .card-head switches to display: grid for all 3 modern themes
+        assert re.search(
+            r'\[data-theme="tokyo"\]\s*\.card-head,\s*'
+            r'\[data-theme="atom"\]\s*\.card-head,\s*'
+            r'\[data-theme="claude"\]\s*\.card-head\s*\{[^}]*display:\s*grid',
+            _INDEX_CSS_THEMES,
+        ) is not None, "Modern cluster .card-head must use display: grid"
+        # .card-meta placed on grid-row: 1 (top)
+        assert re.search(
+            r'\[data-theme="tokyo"\]\s*\.card-meta,\s*'
+            r'\[data-theme="atom"\]\s*\.card-meta,\s*'
+            r'\[data-theme="claude"\]\s*\.card-meta\s*\{[^}]*grid-row:\s*1',
+            _INDEX_CSS_THEMES,
+        ) is not None, "Modern cluster .card-meta must be placed on grid-row: 1"
+        # .card-title placed on grid-row: 2 (below meta)
+        assert re.search(
+            r'\[data-theme="tokyo"\]\s*\.card-title,\s*'
+            r'\[data-theme="atom"\]\s*\.card-title,\s*'
+            r'\[data-theme="claude"\]\s*\.card-title\s*\{[^}]*grid-row:\s*2',
+            _INDEX_CSS_THEMES,
+        ) is not None, "Modern cluster .card-title must be placed on grid-row: 2"
+
+    def test_render_card_sets_data_duration_attribute(self):
+        """renderCard must set data-duration on .card-thumb so the modern
+        cluster's ::after overlay can read it via attr(). Accept either
+        single- or double-quoted attribute name."""
+        from audio_dl_ui import _INDEX_JS
+        assert (
+            "setAttribute('data-duration'" in _INDEX_JS
+            or 'setAttribute("data-duration"' in _INDEX_JS
+        ), "renderCard must call setAttribute('data-duration', ...) on .card-thumb"
+
+    def test_cluster_css_does_not_touch_state_managed_display(self):
+        """Cluster CSS must not assign `display:` on .card-progress or
+        .card-log children — those rules are owned by base state CSS:
+            .card[data-state="queued"] .card-progress { display: none; }
+            .card[data-state="resolving"] .card-log    { display: none; }
+        Overriding at the cluster level would break the show/hide invariant
+        for the queued/resolving lifecycle phases."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        forbidden = re.findall(
+            r'\[data-theme="[^"]+"\]\s*\.card-(?:progress|log|log-line)\s*'
+            r'\{[^}]*display\s*:',
+            _INDEX_CSS_THEMES,
+        )
+        assert not forbidden, (
+            "Cluster CSS must not set `display` on state-managed card children. "
+            f"Offending rules: {forbidden}"
+        )
+
+    def test_cluster_css_does_not_override_badge_state_colors(self):
+        """Cluster CSS must not assign `color:` on .card-badge — those rules
+        are owned by base state CSS for the complete (--ok) and failed
+        (--err) states. Override at the cluster level would silently break
+        success/failure signaling."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        forbidden = re.findall(
+            r'\[data-theme="[^"]+"\]\s*\.card-badge\s*\{[^}]*color\s*:',
+            _INDEX_CSS_THEMES,
+        )
+        assert not forbidden, (
+            "Cluster CSS must not set `color` on .card-badge. "
+            f"Offending rules: {forbidden}"
+        )
+
+    def test_cluster_css_does_not_override_badge_animation(self):
+        """Cluster CSS must not assign animation properties on .card-badge or
+        .card-badge::after — the resolving phase pulse animation is owned by
+        base CSS. Override at the cluster level would silently disable or
+        replace the active-card pulse."""
+        from audio_dl_ui import _INDEX_CSS_THEMES
+        forbidden = re.findall(
+            r'\[data-theme="[^"]+"\]\s*\.card-badge(?:::after)?\s*'
+            r'\{[^}]*animation(?:-name|-duration|-timing-function|-delay'
+            r'|-iteration-count|-direction|-fill-mode|-play-state)?\s*:',
+            _INDEX_CSS_THEMES,
+        )
+        assert not forbidden, (
+            "Cluster CSS must not set animation on .card-badge / ::after. "
+            f"Offending rules: {forbidden}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # _should_keep_log — pure filter for yt-dlp log lines
 # ---------------------------------------------------------------------------
 

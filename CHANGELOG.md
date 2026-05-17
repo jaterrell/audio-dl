@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.7 — Per-theme card structural variations
+
+Cards now express each cluster's structural identity, not just its color palette.
+
+- **Vintage cluster (amber · solarized · gruvbox):** dotted card + thumb borders, uppercase title and uploader, dithered/grayscale thumb filter, segmented progress bar via repeating-gradient, `>` log-line prefix.
+- **Editorial cluster (rose · moon · dawn):** border-bottom only (no full box), serif title (Georgia), italic byline, thin rounded progress bar, italic log lines. Dawn additionally hides the thumb and collapses the card to a single-column grid.
+- **Modern cluster (tokyo · atom · claude):** rounded 10px card with top-full-width thumb, duration overlay in the thumb's top-right corner, uppercase uploader-as-label *above* the title via CSS `order`, thin rounded progress bar.
+- **Phosphor (default):** unchanged — remains the v1.6 reference card.
+
+Implementation is pure CSS layered on the v1.6 card structure plus one new `setAttribute('data-duration')` call in `renderCard` to expose duration to the modern cluster's `::after` overlay. No backend, SSE, or `UrlState` changes.
+
+Spec: `docs/superpowers/specs/2026-05-16-per-theme-card-variations-design.md`
+
 ## v1.6 — Rich job cards + structural-identity themes (2026-05-16)
 
 Web UI: replaces the running-job row list with a stack of full-width
