@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.8.0 — UX rearchitecture: three-zone UI, persistent history
+
+Replaces the v1.5–v1.7 single-pane card stack with a three-zone layout
+(Input / In Flight / History) and adds a global concurrency cap. Fixes
+the long-standing "no proper state management" pain: completed cards
+no longer linger in the active view, the textarea clears after submit,
+and a `localStorage`-backed History section persists across reloads.
+
+**UI:**
+- Three zones with live count headers and empty states. Completed URL
+  cards leave In Flight via `url_completed` / `url_failed` and become
+  compact rows in History.
+- History stored in `localStorage` (key `audio_dl_history`, schema
+  `{v: 1, items: [...]}`), capped at 100 entries with FIFO eviction.
+  Per-row actions: re-download, reveal in Finder, dismiss. Thumbnails
+  inlined as data URLs when ≤ 50KB; larger blobs are skipped.
+- Textarea clears on successful submit.
+- Per-submission `-j` field removed from the form (concurrency is now
+  a launch-time setting).
+
+**Server:**
+- New `--max-parallel N` flag on `audio-dl-ui` (default 4). A single
+  process-wide `ThreadPoolExecutor` replaces the per-job pool — URLs
+  across all submissions share the same worker budget.
+- `/reveal` validation switched from "path must appear in a live
+  `JOBS` entry" to an allow-list of configured output directories
+  (resolved with `Path.resolve()` + `is_relative_to`). History items
+  can now reveal files long after their originating job aged out;
+  path-traversal protection is unchanged.
+- Server stays in-memory / stateless; no persistent storage added.
+
+**Deferred to v1.9:** per-URL config, auto-retry on failure, `JOBS`
+GC/TTL, live concurrency-cap adjustment in the UI. See
+[spec](docs/superpowers/specs/2026-05-19-ux-rearchitecture.md).
+
 ## v1.7.1 — Enable yt-dlp EJS challenge solver
 
 Single-line yt-dlp option fix for YouTube downloads.

@@ -9,6 +9,7 @@ import queue
 import re
 import threading
 import time
+from pathlib import Path
 
 from unittest.mock import MagicMock, patch
 
@@ -548,16 +549,32 @@ class TestCancel:
 # ---------------------------------------------------------------------------
 
 class TestReveal:
-    def test_unknown_path_400(self, monkeypatch):
+    def test_unknown_path_outside_roots_403(self, monkeypatch):
+        """v1.8: paths outside the allow-listed roots are 403 (forbidden),
+        not 400. JOBS is empty and no default_output_dir is set, so /etc/passwd
+        can't be inside any allowed root."""
         import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, app as _app
+
         called = []
         monkeypatch.setattr(
             ui.subprocess, "run",
             lambda *a, **kw: called.append((a, kw)) or None,
         )
-        r = client.post("/reveal", json={"path": "/etc/passwd"}, headers=_csrf_headers())
-        assert r.status_code == 400
-        assert not called, "subprocess.run must not be invoked for unknown paths"
+        original_default = getattr(_app.state, "default_output_dir", None)
+        if hasattr(_app.state, "default_output_dir"):
+            delattr(_app.state, "default_output_dir")
+        JOBS.clear()
+        try:
+            r = client.post("/reveal", json={"path": "/etc/passwd"}, headers=_csrf_headers())
+            # /etc/passwd usually exists → 403 (outside roots).
+            # If it doesn't exist on a hardened container, 404 is also fine —
+            # either way the subprocess must not fire.
+            assert r.status_code in (403, 404)
+            assert not called, "subprocess.run must not be invoked for unknown paths"
+        finally:
+            if original_default is not None:
+                _app.state.default_output_dir = original_default
 
     def test_known_path_calls_open_dash_r(self, tmp_path, monkeypatch):
         """Register a path in a fake job, then reveal it."""
@@ -583,7 +600,9 @@ class TestReveal:
             r = client.post("/reveal", json={"path": path}, headers=_csrf_headers())
             assert r.status_code == 200
             assert r.json() == {"ok": True}
-            assert called == [((["open", "-R", path],), {"check": False})]
+            # v1.8: path is resolved before being passed to open -R.
+            assert called and called[0][0][0][:2] == ["open", "-R"]
+            assert called[0][0][0][2] == str(Path(path).resolve())
         finally:
             del JOBS["manual"]
 
@@ -692,6 +711,31 @@ class TestBindGuard:
         ui.main()  # should not raise
 
 
+class TestMaxParallelValidation:
+    """`--max-parallel` rejects non-positive / out-of-range values at argparse
+    time, rather than crashing later inside ThreadPoolExecutor."""
+
+    @pytest.mark.parametrize("bad", ["0", "-1", "65", "abc"])
+    def test_rejects_invalid(self, monkeypatch, bad):
+        import audio_dl_ui as ui
+        import sys
+        monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(sys, "argv",
+                            ["audio-dl-ui", "--no-browser", "--max-parallel", bad])
+        with pytest.raises(SystemExit) as exc:
+            ui.main()
+        assert exc.value.code == 2  # argparse uses exit code 2 for arg errors
+
+    def test_accepts_valid(self, monkeypatch):
+        import audio_dl_ui as ui
+        import sys
+        monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
+        monkeypatch.setattr(sys, "argv",
+                            ["audio-dl-ui", "--no-browser", "--max-parallel", "8"])
+        ui.main()  # should not raise
+
+
 # ---------------------------------------------------------------------------
 # sanitize_url exception handling in _run_one
 # ---------------------------------------------------------------------------
@@ -755,18 +799,17 @@ class TestRunOneSanitizeError:
 class TestRevealSnapshotsJobs:
     """The /reveal handler must snapshot JOBS before iterating, otherwise a
     concurrent POST /jobs can mutate it mid-iteration and trigger
-    RuntimeError: dictionary changed size during iteration. The behavior we
-    care about is "no crash" — paths added DURING the iteration aren't
-    visible (that's the snapshot tradeoff, and it's acceptable; the client
-    can retry)."""
+    RuntimeError: dictionary changed size during iteration. v1.8 moved the
+    JOBS read into ``_reveal_allowed_roots`` which still iterates JOBS; the
+    snapshot-list pattern keeps that read crash-safe."""
 
     def test_reveal_survives_concurrent_jobs_mutation(self, tmp_path, monkeypatch):
         import audio_dl_ui as ui
         from audio_dl_ui import JOBS, JobState
 
-        # A job whose url_states.values() mutates JOBS mid-iteration.
-        # Without snapshotting outer JOBS.values(), this would raise
-        # RuntimeError: dictionary changed size during iteration.
+        # Use a dict subclass whose .values() mutates JOBS as a side-effect.
+        # If _reveal_allowed_roots fails to snapshot JOBS.values() into a list
+        # before iterating, the mutation triggers RuntimeError → 500.
         class _MutatingStates(dict):
             def values(self):  # type: ignore[override]
                 JOBS[f"mid-iter-{len(JOBS)}"] = JOBS["racer"]
@@ -787,11 +830,11 @@ class TestRevealSnapshotsJobs:
             lambda *a, **kw: called.append((a, kw)) or None,
         )
         try:
-            # The request itself must not 500; 400 (path not in known set)
-            # is acceptable. Pre-fix, this raises RuntimeError → 500.
+            # The request itself must not 500. v1.8 status codes: 404 if the
+            # path doesn't exist, 403 if outside allow-list, 200 if accepted.
             r = client.post("/reveal", json={"path": "/anything"}, headers=_csrf_headers())
             assert r.status_code != 500, f"got 500: {r.text}"
-            assert r.status_code in (200, 400)
+            assert r.status_code in (200, 403, 404)
         finally:
             JOBS.clear()
 
@@ -2109,3 +2152,202 @@ class TestCardJs:
         assert r.status_code == 200
         assert "card-reveal" in r.text
         assert "/reveal" in r.text  # at least somewhere in JS
+
+
+# ---------------------------------------------------------------------------
+# v1.8 — global executor concurrency cap
+# ---------------------------------------------------------------------------
+
+class TestGlobalExecutorCap:
+    """v1.8: the process-wide _GLOBAL_EXECUTOR caps concurrent URL downloads
+    across all submissions. POSTing two submissions of 2 URLs each with the
+    pool capped at 2 workers must never run more than 2 simultaneously."""
+
+    def test_max_parallel_enforced_across_submissions(self, tmp_path, monkeypatch):  # pylint: disable=too-many-locals
+        import audio_dl_ui as ui
+        from concurrent.futures import ThreadPoolExecutor
+
+        active = {"count": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def fake_download(*_args, **_kwargs):
+            with lock:
+                active["count"] += 1
+                if active["count"] > active["peak"]:
+                    active["peak"] = active["count"]
+            try:
+                # Sleep long enough that all four URLs queue up together —
+                # any failure of the cap would push peak past 2.
+                time.sleep(0.5)
+            finally:
+                with lock:
+                    active["count"] -= 1
+            return [str(tmp_path / "ok.mp3")]
+
+        monkeypatch.setattr(ui, "download_media", fake_download)
+        monkeypatch.setattr(ui, "sanitize_url", lambda u: u)
+
+        # Replace the global executor with a 2-worker one for this test.
+        # Save/restore so other tests aren't affected.
+        original = ui._GLOBAL_EXECUTOR
+        capped = ThreadPoolExecutor(max_workers=2, thread_name_prefix="test-cap")
+        ui._GLOBAL_EXECUTOR = capped
+        try:
+            body_a = _valid_body(
+                urls="https://youtu.be/A1 https://youtu.be/A2",
+                output_dir=str(tmp_path),
+            )
+            body_b = _valid_body(
+                urls="https://youtu.be/B1 https://youtu.be/B2",
+                output_dir=str(tmp_path),
+            )
+            r_a = client.post("/jobs", json=body_a, headers=_csrf_headers())
+            r_b = client.post("/jobs", json=body_b, headers=_csrf_headers())
+            assert r_a.status_code == 200
+            assert r_b.status_code == 200
+            job_a = r_a.json()["job_id"]
+            job_b = r_b.json()["job_id"]
+
+            # Wait for both jobs to complete.
+            deadline = time.time() + 15.0
+            while time.time() < deadline:
+                if JOBS[job_a].completed and JOBS[job_b].completed:
+                    break
+                time.sleep(0.05)
+            assert JOBS[job_a].completed, "job A did not complete in time"
+            assert JOBS[job_b].completed, "job B did not complete in time"
+
+            # Cap enforced — peak observed concurrency stays <= 2 even with
+            # 4 URLs of demand across two submissions.
+            assert active["peak"] <= 2, f"peak concurrency {active['peak']} exceeded cap of 2"
+            # And the test actually exercised concurrency (sanity).
+            assert active["peak"] >= 2, (
+                f"peak concurrency {active['peak']} — test didn't actually overlap"
+            )
+        finally:
+            capped.shutdown(wait=True)
+            ui._GLOBAL_EXECUTOR = original
+            JOBS.pop(job_a, None)
+            JOBS.pop(job_b, None)
+
+
+# ---------------------------------------------------------------------------
+# v1.8 — /reveal allow-list semantics
+# ---------------------------------------------------------------------------
+
+class TestRevealAllowList:
+    """v1.8: /reveal validates against the configured output_dir allow-list
+    rather than a live JOBS path lookup, so history items can re-reveal
+    after their originating job ages out of JOBS."""
+
+    def test_reveal_accepts_on_disk_path_not_in_jobs(self, tmp_path, monkeypatch):
+        """File exists, lives under the configured output_dir, no JOBS
+        entry references it → 200."""
+        import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, app as _app
+
+        target = tmp_path / "song.mp3"
+        target.write_bytes(b"x")
+
+        # Configure allow-list root via the same surface main() uses.
+        original_default = getattr(_app.state, "default_output_dir", None)
+        _app.state.default_output_dir = str(tmp_path)
+        JOBS.clear()
+
+        called = []
+        monkeypatch.setattr(
+            ui.subprocess, "run",
+            lambda *a, **kw: called.append((a, kw)) or None,
+        )
+        try:
+            r = client.post(
+                "/reveal", json={"path": str(target)}, headers=_csrf_headers()
+            )
+            assert r.status_code == 200, f"got {r.status_code}: {r.text}"
+            assert r.json() == {"ok": True}
+            assert called, "subprocess.run must be invoked for accepted path"
+            assert called[0][0][0][:2] == ["open", "-R"]
+        finally:
+            if original_default is None:
+                if hasattr(_app.state, "default_output_dir"):
+                    delattr(_app.state, "default_output_dir")
+            else:
+                _app.state.default_output_dir = original_default
+
+    def test_reveal_rejects_path_outside_allowlist(self, tmp_path, monkeypatch):
+        """Path exists on disk but isn't inside any allow-listed root → 403."""
+        import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, app as _app
+
+        # Create a file outside tmp_path's allow-list root.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_target = outside / "leak.txt"
+        outside_target.write_bytes(b"y")
+
+        # Configure a more restrictive root: a sibling subdir.
+        restricted = tmp_path / "allowed"
+        restricted.mkdir()
+
+        original_default = getattr(_app.state, "default_output_dir", None)
+        _app.state.default_output_dir = str(restricted)
+        JOBS.clear()
+
+        called = []
+        monkeypatch.setattr(
+            ui.subprocess, "run",
+            lambda *a, **kw: called.append((a, kw)) or None,
+        )
+        try:
+            r = client.post(
+                "/reveal",
+                json={"path": str(outside_target)},
+                headers=_csrf_headers(),
+            )
+            assert r.status_code == 403, f"got {r.status_code}: {r.text}"
+            assert not called, "subprocess.run must not fire for forbidden paths"
+        finally:
+            if original_default is None:
+                if hasattr(_app.state, "default_output_dir"):
+                    delattr(_app.state, "default_output_dir")
+            else:
+                _app.state.default_output_dir = original_default
+
+    def test_reveal_rejects_path_traversal(self, tmp_path, monkeypatch):
+        """A path that lexically begins inside the allow-list but resolves
+        outside via .. must be rejected (403). Path.resolve() collapses the
+        traversal before is_relative_to runs."""
+        import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, app as _app
+
+        # Restricted root + a sentinel file inside it (so the allow-list
+        # has at least one valid entry).
+        restricted = tmp_path / "allowed"
+        restricted.mkdir()
+        (restricted / "ok.mp3").write_bytes(b"z")
+
+        # Construct a traversal that points outside restricted.
+        evil = f"{restricted}/../../../etc/passwd"
+
+        original_default = getattr(_app.state, "default_output_dir", None)
+        _app.state.default_output_dir = str(restricted)
+        JOBS.clear()
+
+        called = []
+        monkeypatch.setattr(
+            ui.subprocess, "run",
+            lambda *a, **kw: called.append((a, kw)) or None,
+        )
+        try:
+            r = client.post("/reveal", json={"path": evil}, headers=_csrf_headers())
+            # Either 403 (resolved outside allow-list) or 404 (resolved path
+            # doesn't exist on this filesystem). 404 still satisfies the
+            # safety property — subprocess never fires.
+            assert r.status_code in (403, 404), f"got {r.status_code}: {r.text}"
+            assert not called, "subprocess.run must not fire for traversal attempts"
+        finally:
+            if original_default is None:
+                if hasattr(_app.state, "default_output_dir"):
+                    delattr(_app.state, "default_output_dir")
+            else:
+                _app.state.default_output_dir = original_default

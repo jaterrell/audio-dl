@@ -24,3 +24,4 @@ dist/
 .gstack/
 .context/
 .superpowers/
+.claude/worktrees/

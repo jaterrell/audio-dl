@@ -33,6 +33,7 @@ import uuid
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Literal
 
 import httpx
@@ -125,9 +126,17 @@ class JobState:  # pylint: disable=too-many-instance-attributes
     cancelled: bool = False
     completed: bool = False
     executor: ThreadPoolExecutor | None = None
+    futures: list = field(default_factory=list)
 
 
 JOBS: dict[str, JobState] = {}
+
+# v1.8: process-wide worker pool shared across all submissions. Initialized
+# by main() from --max-parallel. URLs from different submissions compete for
+# the same workers, so the total concurrent-download cap is a single tuning
+# knob rather than a per-submission setting. Tests may monkey-patch this
+# directly with their own ThreadPoolExecutor.
+_GLOBAL_EXECUTOR: ThreadPoolExecutor | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -555,8 +564,8 @@ def _supervise(job: JobState, futures: list) -> None:
         else:
             summary["failed"] += 1
     _emit(job, {"type": "job_completed", "job_id": job.id, "summary": summary})
-    if job.executor is not None:
-        job.executor.shutdown(wait=False)
+    # v1.8: executor is the process-wide _GLOBAL_EXECUTOR, shared with other
+    # jobs — do NOT shut it down here. Per-job teardown is just the thumb dir.
     # Best-effort cleanup of thumbnail tempdir. Only remove if no
     # subscribers are still streaming — otherwise reconnects in the next
     # second would 404 on thumbs that should still render.
@@ -574,13 +583,26 @@ def _start_job(job: JobState) -> None:
     receives on connect. This sidesteps the race where a subscriber connects
     after ``_start_job`` and would otherwise miss the original ``job_started``
     in a pure-broadcast model.
+
+    v1.8: URLs are submitted to a process-wide ``_GLOBAL_EXECUTOR`` so the
+    total concurrent-download cap is shared across all submissions. The job's
+    ``executor`` attribute is set to the same global instance for backwards
+    compatibility with code paths (cancel) that reach for it; supervisor
+    does NOT shut it down on job_completed. If ``_GLOBAL_EXECUTOR`` is None
+    (no ``main()`` call — typical in tests), one is created lazily using a
+    conservative default so tests don't have to bootstrap it.
     """
-    job.executor = ThreadPoolExecutor(max_workers=job.jobs)
-    futures = [
-        job.executor.submit(_run_one, job, url)
+    global _GLOBAL_EXECUTOR  # pylint: disable=global-statement
+    if _GLOBAL_EXECUTOR is None:
+        _GLOBAL_EXECUTOR = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="audio-dl-worker"
+        )
+    job.executor = _GLOBAL_EXECUTOR
+    job.futures = [
+        _GLOBAL_EXECUTOR.submit(_run_one, job, url)
         for url in job.url_states
     ]
-    supervisor = threading.Thread(target=_supervise, args=(job, futures), daemon=True)
+    supervisor = threading.Thread(target=_supervise, args=(job, job.futures), daemon=True)
     supervisor.start()
 
 
@@ -1012,6 +1034,110 @@ _INDEX_CSS_BASE = """  :root {
   @media (prefers-reduced-motion: reduce) {
     .card[data-state="resolving"] .card-badge::after { animation: none; }
   }
+
+  /* ── Three-zone layout: In Flight / History sections ───────────────── */
+  #inflight, #history {
+    margin-top: 0.9em;
+    padding-top: 0.5em;
+    border-top: 1px solid var(--frame);
+  }
+  #inflight:first-of-type { border-top: 0; margin-top: 0.2em; padding-top: 0.2em; }
+  .zone-header {
+    color: var(--label);
+    font-size: var(--fs-sm);
+    font-weight: var(--title-weight);
+    text-transform: var(--title-transform);
+    letter-spacing: var(--title-letterspacing);
+    margin: 0 0 0.3em 1ch;
+    padding: 0;
+  }
+  .zone-header span { color: var(--accent); }
+  .empty-state {
+    color: var(--dim);
+    font-style: italic;
+    font-size: var(--fs-sm);
+    padding: 0.2em 1ch 0.4em;
+    margin: 0;
+  }
+  /* Hide empty-state when the section has children (history rows or cards). */
+  #inflight[data-empty="false"] > .empty-state,
+  #history[data-empty="false"] > .empty-state { display: none; }
+  /* Hide the contents container when empty so the empty-state stands alone. */
+  #inflight[data-empty="true"] > #rows,
+  #history[data-empty="true"] > #history-rows { display: none; }
+
+  /* ── Compact history row ───────────────────────────────────────────── */
+  .history-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 48px;
+    padding: 4px 1ch;
+    border: 1px solid var(--frame);
+    margin: 4px 0;
+    background: var(--bg);
+    min-width: 0;
+  }
+  .history-row[data-status="failed"] { border-left: 3px solid var(--err); }
+  .history-thumb {
+    width: 32px; height: 32px; flex-shrink: 0;
+    border-radius: 4px; overflow: hidden;
+    background: var(--dim);
+    border: 1px solid var(--frame);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .history-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .history-thumb.history-thumb--placeholder::before {
+    content: "▢"; color: var(--frame); font-size: 16px;
+  }
+  .history-body {
+    display: flex; flex-direction: column;
+    flex: 1; min-width: 0;
+    line-height: 1.2;
+  }
+  .history-title {
+    color: var(--accent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-sm);
+  }
+  .history-row[data-status="failed"] .history-title { color: var(--fg); }
+  .history-secondary {
+    color: var(--dim);
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .history-badge {
+    flex-shrink: 0;
+    color: var(--btn-fg);
+    background: var(--accent);
+    font-size: var(--fs-sm);
+    padding: 1px 6px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .history-row[data-status="failed"] .history-badge {
+    background: var(--err);
+    color: var(--btn-fg);
+  }
+  .history-actions {
+    display: flex; gap: 4px; flex-shrink: 0;
+  }
+  .history-actions button {
+    background: transparent;
+    border: 1px solid var(--frame);
+    color: var(--accent);
+    font: inherit; font-size: var(--fs-sm);
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .history-actions button:hover { background: var(--dim); }
+  .history-actions button.history-dismiss { color: var(--dim); }
+  .history-actions button.history-dismiss:hover { color: var(--err); }
 """
 
 _INDEX_CSS_THEMES = """  :root[data-theme="phosphor"] {
@@ -1793,10 +1919,10 @@ _INDEX_HTML_BODY = """<div id="status-bar">
       <div class="field-line"><span class="label">urls</span><span class="marker">▸</span> <textarea class="field" id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea></div>
       <div class="field-line"><span class="label">format</span><span class="marker">▸</span> <select class="field" id="format" name="format" style="max-width:18ch;">__FORMAT_OPTIONS__</select></div>
       <div class="field-line"><span class="label">output</span><span class="marker">▸</span> <input class="field" id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required></div>
-      <div class="field-line"><span class="label">jobs</span><span class="marker">▸</span> <input class="slider" id="jobs" name="jobs" type="range" min="1" max="8" value="1"> <span id="jobs_val" class="dim">1</span></div>
       <div class="field-line"><span class="label">fragments</span><span class="marker">▸</span> <input class="slider" id="fragments" name="fragments" type="range" min="1" max="16" value="4"> <span id="fragments_val" class="dim">4</span></div>
       <div class="field-line"><span class="label">flags</span><span class="marker">▸</span> <label style="margin-right:12px;"><input type="checkbox" id="playlist" name="playlist"> playlist</label> <label><input type="checkbox" id="force" name="force"> overwrite</label></div>
       <div class="field-line" style="margin-top:6px;"><span class="label"></span><button type="submit" class="tui-btn" id="submit">[ download ]</button> <span class="dim">⌘↵</span></div>
+      <div class="field-line" id="submit-notice-row" hidden><span class="label"></span><span class="marker">▸</span> <span id="submit-notice" class="dim"></span></div>
     </div>
   </form>
   <div class="frame"><span class="frame-corner">└</span><span class="frame-fill"></span><span class="frame-corner">┘</span></div>
@@ -1813,9 +1939,18 @@ _INDEX_HTML_BODY = """<div id="status-bar">
       <div class="stats-row"><span class="stats-label">failed</span><span class="stats-val failed" id="stat-failed">0</span></div>
     </div>
   </div>
-  <section id="jobpanel" hidden>
+  <section id="jobpanel">
     <div class="frame"><span class="frame-corner">├─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">JOBS</span><span class="pt-bracket"> ]</span></span><span class="dim" style="margin-left:1ch;">─</span> <span class="summary" id="job-summary">0 done · 0 active · 0 fail</span><span class="frame-fill"></span><span class="frame-corner">┤</span></div>
-    <div class="body-section" id="rows"></div>
+    <section id="inflight" data-empty="true">
+      <h2 class="zone-header">In Flight (<span id="inflight-count">0</span>)</h2>
+      <div class="body-section" id="rows"></div>
+      <p class="empty-state">Nothing in flight.</p>
+    </section>
+    <section id="history" data-empty="true">
+      <h2 class="zone-header">History (<span id="history-count">0</span>)</h2>
+      <div id="history-rows"></div>
+      <p class="empty-state">No history yet.</p>
+    </section>
   </section>
   <div class="frame"><span class="frame-corner">└</span><span class="frame-fill"></span><span class="frame-corner">┘</span></div>
 </div>
@@ -1880,11 +2015,15 @@ _INDEX_JS = """const THEMES = [
     const el = $(id), out = $(id + '_val');
     el.addEventListener('input', () => { out.textContent = el.value; });
   };
-  sliderBind('jobs');
   sliderBind('fragments');
 
   let currentJobId = null;
-  let es = null;
+  // EventSources are tracked per job_id so overlapping submissions (e.g. a
+  // history re-download started while another job is still streaming) each
+  // close their own stream on terminal events. A single global `es` ref
+  // would otherwise let an older job's job_completed handler call close()
+  // on a newer job's stream.
+  const activeStreams = new Map();  // job_id -> EventSource
   const rows = $('rows');
   const summary = $('job-summary');
   let counts = { done: 0, active: 0, fail: 0, queued: 0 };
@@ -1965,10 +2104,8 @@ _INDEX_JS = """const THEMES = [
   function updateStatsMeta() {
     const { done, active, fail } = counts;
     const theme = document.documentElement.dataset.theme || 'phosphor';
-    const jobs = $('jobs') ? parseInt($('jobs').value, 10) : 1;
     const frags = $('fragments') ? $('fragments').value : '4';
-    const jobLabel = jobs === 1 ? '1 job' : `${jobs} jobs`;
-    sbMetaText.textContent = `${jobLabel} · ${frags} frags · ${theme}`;
+    sbMetaText.textContent = `${frags} frags · ${theme}`;
     $('stat-queued').textContent = String(counts.queued);
     $('stat-active').textContent = String(active);
     $('stat-done').textContent = String(done);
@@ -1980,6 +2117,13 @@ _INDEX_JS = """const THEMES = [
     updateStatusIndicator();
     updateStatsMeta();
   }
+
+  // ── Per-URL metadata captured at submit + arriving via SSE ───────────
+  // urlMeta[url] = { title, format, thumbnail_data_url, url_idx, job_id }
+  // Lives across SSE events so we can build a HistoryEntry when url_completed
+  // / url_failed fires. Cleared lazily — entries linger after history move,
+  // which is fine because re-submission overwrites them.
+  const urlMeta = {};
 
   // ── Card rendering — rich job cards ────────────────────────────────────
   const cardEls = {};   // url -> HTMLElement
@@ -2064,10 +2208,11 @@ _INDEX_JS = """const THEMES = [
 
     // Thumbnail
     const thumb = el.querySelector('.card-thumb');
-    if (st.thumbnail_ready && currentJobId) {
+    const thumbJobId = st.job_id || currentJobId;
+    if (st.thumbnail_ready && thumbJobId) {
       thumb.classList.remove('card-thumb--placeholder');
       const idx = st.url_idx != null ? st.url_idx : 0;
-      thumb.innerHTML = `<img src="/jobs/${currentJobId}/thumb/${idx}.jpg?token=${encodeURIComponent(CSRF_TOKEN)}" alt="">`;
+      thumb.innerHTML = `<img src="/jobs/${thumbJobId}/thumb/${idx}.jpg?token=${encodeURIComponent(CSRF_TOKEN)}" alt="">`;
     } else {
       thumb.classList.add('card-thumb--placeholder');
       thumb.innerHTML = '';
@@ -2121,6 +2266,271 @@ _INDEX_JS = """const THEMES = [
     });
     counts = next;
     refreshSummary();
+    refreshInflight();
+  }
+
+  // ── In-Flight zone counter + empty-state ────────────────────────────
+  function refreshInflight() {
+    const section = $('inflight');
+    if (!section) return;
+    const n = rows.querySelectorAll('.card').length;
+    $('inflight-count').textContent = String(n);
+    section.dataset.empty = n === 0 ? 'true' : 'false';
+  }
+
+  // ── History (localStorage-backed) ───────────────────────────────────
+  const HISTORY_KEY = 'audio_dl_history';
+  const HISTORY_MAX = 100;
+  const THUMB_MAX_BYTES = 50000;
+
+  function loadHistory() {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (!raw) return [];
+      const obj = JSON.parse(raw);
+      if (!obj || obj.v !== 1 || !Array.isArray(obj.items)) return [];
+      return obj.items;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveHistory(arr) {
+    const items = arr.slice(0, HISTORY_MAX);
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify({ v: 1, items }));
+    } catch (e) {
+      // Quota exceeded — try once more, dropping all thumbnails to free space.
+      try {
+        const trimmed = items.map(it => {
+          const { thumbnail_data_url, ...rest } = it;
+          return rest;
+        });
+        localStorage.setItem(HISTORY_KEY, JSON.stringify({ v: 1, items: trimmed }));
+      } catch (e2) { /* give up — history won't persist this round */ }
+    }
+  }
+
+  function pushHistory(entry) {
+    const arr = loadHistory();
+    arr.unshift(entry);  // newest on top
+    saveHistory(arr);
+    renderHistory();
+  }
+
+  function removeHistoryItem(url, completed_at) {
+    const arr = loadHistory();
+    const idx = arr.findIndex(e => e.url === url && e.completed_at === completed_at);
+    if (idx >= 0) {
+      arr.splice(idx, 1);
+      saveHistory(arr);
+      renderHistory();
+    }
+  }
+
+  function hostOf(url) {
+    try { return new URL(url).host; } catch (e) { return url; }
+  }
+
+  function formatTimestamp(ms) {
+    const d = new Date(ms);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    if (sameDay) return `${hh}:${mm}`;
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${mo}-${day} ${hh}:${mm}`;
+  }
+
+  function renderHistory() {
+    const container = $('history-rows');
+    const section = $('history');
+    if (!container || !section) return;
+    const items = loadHistory();
+    container.innerHTML = '';
+    for (const entry of items) {
+      container.appendChild(buildHistoryRow(entry));
+    }
+    $('history-count').textContent = String(items.length);
+    section.dataset.empty = items.length === 0 ? 'true' : 'false';
+  }
+
+  function buildHistoryRow(entry) {
+    const row = document.createElement('div');
+    row.className = 'history-row';
+    row.dataset.status = entry.status;
+    row.dataset.url = entry.url;
+
+    // Thumb
+    const thumb = document.createElement('div');
+    thumb.className = 'history-thumb';
+    if (entry.thumbnail_data_url) {
+      const img = document.createElement('img');
+      img.src = entry.thumbnail_data_url;
+      img.alt = '';
+      thumb.appendChild(img);
+    } else {
+      thumb.classList.add('history-thumb--placeholder');
+    }
+    row.appendChild(thumb);
+
+    // Body
+    const body = document.createElement('div');
+    body.className = 'history-body';
+    const title = document.createElement('div');
+    title.className = 'history-title';
+    title.textContent = entry.title || entry.url;
+    title.title = entry.title || entry.url;
+    const secondary = document.createElement('div');
+    secondary.className = 'history-secondary';
+    const ts = formatTimestamp(entry.completed_at);
+    const parts = [hostOf(entry.url), ts];
+    if (entry.status === 'failed' && entry.error) parts.push(entry.error);
+    secondary.textContent = parts.join(' · ');
+    body.appendChild(title);
+    body.appendChild(secondary);
+    row.appendChild(body);
+
+    // Badge
+    const badge = document.createElement('span');
+    badge.className = 'history-badge';
+    badge.textContent = (entry.format || '').toUpperCase() || (entry.status === 'failed' ? 'FAIL' : '?');
+    row.appendChild(badge);
+
+    // Actions
+    const actions = document.createElement('div');
+    actions.className = 'history-actions';
+
+    const redl = document.createElement('button');
+    redl.type = 'button';
+    redl.className = 'history-redl';
+    redl.textContent = '↺ Re-DL';
+    redl.title = 'Re-download with the same format';
+    redl.addEventListener('click', () => historyRedl(entry));
+    actions.appendChild(redl);
+
+    const reveal = document.createElement('button');
+    reveal.type = 'button';
+    reveal.className = 'history-reveal';
+    reveal.textContent = '📁 Show';
+    reveal.title = 'Reveal in file manager';
+    if (!entry.paths || entry.paths.length === 0) reveal.disabled = true;
+    reveal.addEventListener('click', () => historyReveal(entry, secondary));
+    actions.appendChild(reveal);
+
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'history-dismiss';
+    dismiss.textContent = '✕';
+    dismiss.title = 'Remove from history';
+    dismiss.addEventListener('click', () => removeHistoryItem(entry.url, entry.completed_at));
+    actions.appendChild(dismiss);
+
+    row.appendChild(actions);
+    return row;
+  }
+
+  async function historyRedl(entry) {
+    await submitJob({
+      urlsText: entry.url,
+      format: entry.format || $('format').value,
+      output_dir: $('output_dir').value,
+      playlist: $('playlist').checked,
+      force: $('force').checked,
+      fragments: parseInt($('fragments').value, 10),
+      clearTextarea: false,
+    });
+  }
+
+  async function historyReveal(entry, secondaryEl) {
+    if (!entry.paths || entry.paths.length === 0) return;
+    let resp;
+    try {
+      resp = await fetch('/reveal', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-Audio-DL-Token': CSRF_TOKEN},
+        body: JSON.stringify({path: entry.paths[0]}),
+      });
+    } catch (e) {
+      flashSecondary(secondaryEl, 'reveal failed: ' + e);
+      return;
+    }
+    if (!resp.ok) {
+      flashSecondary(secondaryEl, 'file moved or deleted');
+    }
+  }
+
+  function flashSecondary(el, msg) {
+    if (!el) return;
+    const prev = el.textContent;
+    el.textContent = msg;
+    el.classList.add('err');
+    setTimeout(() => {
+      el.textContent = prev;
+      el.classList.remove('err');
+    }, 3000);
+  }
+
+  // Informational notice shown next to the submit button (e.g. when a
+  // submission is partially or fully deduped against in-flight cards).
+  let submitNoticeTimer = null;
+  function flashSubmitNotice(msg) {
+    const row = $('submit-notice-row');
+    const notice = $('submit-notice');
+    if (!row || !notice) return;
+    notice.textContent = msg;
+    row.hidden = false;
+    if (submitNoticeTimer) clearTimeout(submitNoticeTimer);
+    submitNoticeTimer = setTimeout(() => { row.hidden = true; }, 4000);
+  }
+
+  // Fetch a thumbnail via the proxy and stash a data URL on urlMeta[url].
+  // Only stored if blob size <= THUMB_MAX_BYTES so localStorage doesn't blow
+  // through quota; oversize thumbs are silently dropped (history row will
+  // fall back to placeholder).
+  async function captureThumbnail(url) {
+    const meta = urlMeta[url];
+    if (!meta || !meta.job_id || meta.url_idx == null) return;
+    if (meta.thumbnail_data_url) return;  // already captured
+    try {
+      const resp = await fetch(
+        `/jobs/${meta.job_id}/thumb/${meta.url_idx}.jpg?token=${encodeURIComponent(CSRF_TOKEN)}`
+      );
+      if (!resp.ok) return;
+      const blob = await resp.blob();
+      if (blob.size > THUMB_MAX_BYTES) return;
+      const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = reject;
+        r.readAsDataURL(blob);
+      });
+      meta.thumbnail_data_url = dataUrl;
+    } catch (e) { /* swallow — history row will render without a thumb */ }
+  }
+
+  function moveToHistory(url, payload) {
+    const meta = urlMeta[url] || {};
+    const entry = {
+      url,
+      title: meta.title || url,
+      format: meta.format || '',
+      paths: payload.paths || [],
+      completed_at: Date.now(),
+      status: payload.status,
+    };
+    if (payload.status === 'failed' && payload.error) entry.error = payload.error;
+    if (meta.thumbnail_data_url) entry.thumbnail_data_url = meta.thumbnail_data_url;
+    pushHistory(entry);
+
+    // Remove the in-flight card (if present).
+    const card = cardEls[url];
+    if (card && card.parentNode) card.parentNode.removeChild(card);
+    delete cardEls[url];
+    delete cardState[url];
+    refreshInflight();
   }
 
   function handleEvent(ev) {
@@ -2161,6 +2571,10 @@ _INDEX_JS = """const THEMES = [
       if (cardState[ev.url].url_idx === undefined) {
         cardState[ev.url].url_idx = Object.keys(cardState).indexOf(ev.url);
       }
+      cardState[ev.url].job_id = ev.job_id || currentJobId;
+      urlMeta[ev.url] = urlMeta[ev.url] || {};
+      urlMeta[ev.url].job_id = ev.job_id || currentJobId;
+      urlMeta[ev.url].url_idx = cardState[ev.url].url_idx;
       renderCard(ev.url);
       recountFromCards();
     } else if (ev.type === 'url_metadata') {
@@ -2172,6 +2586,12 @@ _INDEX_JS = """const THEMES = [
       if (cardState[ev.url].url_idx === undefined) {
         cardState[ev.url].url_idx = Object.keys(cardState).indexOf(ev.url);
       }
+      cardState[ev.url].job_id = ev.job_id || cardState[ev.url].job_id || currentJobId;
+      urlMeta[ev.url] = urlMeta[ev.url] || {};
+      urlMeta[ev.url].title = ev.title || urlMeta[ev.url].title;
+      urlMeta[ev.url].job_id = ev.job_id || urlMeta[ev.url].job_id || currentJobId;
+      urlMeta[ev.url].url_idx = cardState[ev.url].url_idx;
+      if (ev.thumbnail_ready) captureThumbnail(ev.url);
       renderCard(ev.url);
     } else if (ev.type === 'progress') {
       if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
@@ -2189,31 +2609,35 @@ _INDEX_JS = """const THEMES = [
       if (cardState[ev.url].log.length > 50) cardState[ev.url].log.shift();
       renderCard(ev.url);
     } else if (ev.type === 'url_completed') {
-      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
-      cardState[ev.url].phase = 'complete';
-      cardState[ev.url].paths = ev.paths;
-      renderCard(ev.url);
+      moveToHistory(ev.url, { status: 'completed', paths: ev.paths });
       recountFromCards();
     } else if (ev.type === 'url_failed') {
-      if (!cardState[ev.url]) cardState[ev.url] = { log: [] };
-      cardState[ev.url].phase = 'failed';
-      cardState[ev.url].error = ev.error;
-      renderCard(ev.url);
+      moveToHistory(ev.url, { status: 'failed', error: ev.error });
       recountFromCards();
     } else if (ev.type === 'job_completed') {
-      $('submit').disabled = false;
-      $('cancel').disabled = true;
-      es && es.close();
-      es = null;
-      currentJobId = null;
-      stopSpinner();
+      const finishedEs = activeStreams.get(ev.job_id);
+      if (finishedEs) {
+        finishedEs.close();
+        activeStreams.delete(ev.job_id);
+      }
+      if (activeStreams.size === 0) {
+        $('cancel').disabled = true;
+        currentJobId = null;
+        stopSpinner();
+      } else if (ev.job_id === currentJobId) {
+        // The cancel button was targeting this just-finished job; point
+        // it at the newest job still streaming so the button stays useful
+        // when an older submission outlives a newer one.
+        const ids = Array.from(activeStreams.keys());
+        currentJobId = ids[ids.length - 1];
+      }
       // Re-derive counts from cards so the indicator reflects final state.
       recountFromCards();
     }
   }
 
   // Update status bar meta text when sliders change.
-  ['jobs', 'fragments'].forEach(id => {
+  ['fragments'].forEach(id => {
     $(id).addEventListener('input', updateStatsMeta);
   });
   // Initial meta text render.
@@ -2221,25 +2645,63 @@ _INDEX_JS = """const THEMES = [
 
   $('dl').addEventListener('submit', async (e) => {
     e.preventDefault();
-    $('submit').disabled = true;
-    $('cancel').disabled = false;
-    rows.innerHTML = '';
-    // Reset card state so re-submissions don't reuse detached DOM nodes.
-    for (const k in cardEls) delete cardEls[k];
-    for (const k in cardState) delete cardState[k];
-    stopSpinner();
-    counts = { done: 0, active: 0, fail: 0, queued: 0 };
-    refreshSummary();
-    $('jobpanel').hidden = false;
-
-    const body = {
-      urls: $('urls').value,
+    await submitJob({
+      urlsText: $('urls').value,
       format: $('format').value,
       output_dir: $('output_dir').value,
       playlist: $('playlist').checked,
       force: $('force').checked,
-      jobs: parseInt($('jobs').value, 10),
       fragments: parseInt($('fragments').value, 10),
+      clearTextarea: true,
+    });
+  });
+
+  async function submitJob(opts) {
+    $('submit').disabled = true;
+    $('cancel').disabled = false;
+    stopSpinner();
+    // We no longer wipe the in-flight rows on each submit — leaving previous
+    // cards in place breaks the move-to-history flow if a new job arrives
+    // before the old one drains. Cards live in #inflight until url_completed
+    // / url_failed moves them off.
+    refreshSummary();
+
+    // Format is tracked per-URL so re-downloads pick the format used at
+    // the original submit time (history rows replay through this path too).
+    const rawUrls = opts.urlsText.split(/\\s+/).map(s => s.trim()).filter(Boolean);
+
+    // Dedupe against URLs currently in flight. cardState[url] entries exist
+    // only for live cards (moveToHistory deletes them on terminal events),
+    // so this catches both raw form submits and history re-downloads that
+    // collide with an already-running job. Without this, a second submission
+    // of the same URL would share urlMeta/cardState keys with the first and
+    // the two streams' events would interleave on one entry.
+    const inFlight = new Set(Object.keys(cardState));
+    const acceptedUrls = rawUrls.filter(u => !inFlight.has(u));
+    const skippedCount = rawUrls.length - acceptedUrls.length;
+    if (skippedCount > 0) {
+      flashSubmitNotice(
+        `${skippedCount} URL${skippedCount > 1 ? 's' : ''} already in flight, skipped`
+      );
+    }
+    if (acceptedUrls.length === 0) {
+      $('submit').disabled = false;
+      if (activeStreams.size === 0) $('cancel').disabled = true;
+      return;
+    }
+
+    for (const u of acceptedUrls) {
+      urlMeta[u] = urlMeta[u] || {};
+      urlMeta[u].format = opts.format;
+    }
+
+    const body = {
+      urls: acceptedUrls.join('\\n'),
+      format: opts.format,
+      output_dir: opts.output_dir,
+      playlist: opts.playlist,
+      force: opts.force,
+      fragments: opts.fragments,
     };
     let resp;
     try {
@@ -2263,13 +2725,19 @@ _INDEX_JS = """const THEMES = [
     }
     const {job_id} = await resp.json();
     currentJobId = job_id;
-    es = new EventSource('/jobs/' + job_id + '/events?token=' + encodeURIComponent(CSRF_TOKEN));
-    es.onmessage = (m) => {
+    if (opts.clearTextarea) $('urls').value = '';
+    const stream = new EventSource('/jobs/' + job_id + '/events?token=' + encodeURIComponent(CSRF_TOKEN));
+    activeStreams.set(job_id, stream);
+    stream.onmessage = (m) => {
       if (!m.data) return;
       try { handleEvent(JSON.parse(m.data)); } catch (e) { console.error(e, m.data); }
     };
-    es.onerror = () => { /* EventSource auto-reconnects */ };
-  });
+    stream.onerror = () => { /* EventSource auto-reconnects */ };
+    // Re-enable submit immediately so v1.8's mid-flight adds work. Each
+    // submission's lifecycle is now bounded by its own EventSource in the
+    // activeStreams map rather than a global busy flag.
+    $('submit').disabled = false;
+  }
 
   $('cancel').addEventListener('click', () => {
     if (currentJobId) {
@@ -2447,6 +2915,20 @@ _INDEX_JS = """const THEMES = [
       e.preventDefault();
     }
   });
+
+  // ── Initial hydrate ──────────────────────────────────────────────────
+  // The IIFE runs at end-of-body so the DOM is already parsed; we can hydrate
+  // both zones synchronously. Wrap in DOMContentLoaded for safety in case the
+  // script is ever moved to <head> with `defer`.
+  function hydrate() {
+    renderHistory();
+    refreshInflight();
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', hydrate);
+  } else {
+    hydrate();
+  }
 })();
 """
 # pylint: enable=line-too-long
@@ -2668,13 +3150,20 @@ async def get_events(job_id: str, _csrf: str = Depends(_require_csrf)) -> Stream
 
 @app.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: str, _csrf: str = Depends(_require_csrf)) -> dict:  # pylint: disable=unused-argument
-    """Cancel a job: set flag and shut down the executor."""
+    """Cancel a job: set flag and cancel any not-yet-started futures.
+
+    v1.8: the executor is process-wide and shared with other jobs, so we
+    can't shut it down here. Instead, set ``job.cancelled`` (which the
+    progress hook and ``_run_one`` honor) and best-effort ``cancel()`` each
+    pending future to free a worker slot for other submissions. Running
+    futures will discover ``job.cancelled`` on their next progress tick.
+    """
     job = JOBS.get(job_id)
     if job is None:
         raise HTTPException(404, f"unknown job_id: {job_id}")
     job.cancelled = True
-    if job.executor is not None:
-        job.executor.shutdown(wait=False, cancel_futures=True)
+    for fut in job.futures:
+        fut.cancel()
     return {"ok": True}
 
 
@@ -2706,22 +3195,58 @@ class RevealRequest(BaseModel):
     path: str
 
 
+def _reveal_allowed_roots() -> set[Path]:
+    """Return the set of directories that ``/reveal`` is allowed to expose.
+
+    v1.8: history items live in the browser's localStorage and outlive the
+    JOBS entries that produced them, so the previous "path must appear in
+    some live JOBS[*].url_states[*].paths" gate no longer works. Instead,
+    the allow-list is directory-based:
+
+    * the server-wide default output dir (set at launch via --output-dir)
+    * any per-job output_dir override still resident in JOBS
+
+    Snapshotting JOBS first — concurrent POST /jobs can mutate it
+    mid-iteration and raise RuntimeError otherwise.
+    """
+    roots: set[Path] = set()
+    default_dir = getattr(app.state, "default_output_dir", None)
+    if default_dir:
+        try:
+            roots.add(Path(default_dir).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError):
+            pass
+    for job in list(JOBS.values()):
+        try:
+            roots.add(Path(job.output_dir).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError):
+            continue
+    return roots
+
+
 @app.post("/reveal")
 async def reveal(req: RevealRequest, _csrf: str = Depends(_require_csrf)) -> dict:  # pylint: disable=unused-argument
-    """Open the file in Finder. Path must match a saved file in some current job."""
-    # Path-traversal guard: only allow paths that match a saved file in
-    # some current JobState. Prevents arbitrary `open -R` calls from the
-    # browser. Snapshot JOBS first — concurrent POST /jobs can mutate it
-    # mid-iteration and raise RuntimeError otherwise.
-    known = {
-        p
-        for job in list(JOBS.values())
-        for st in list(job.url_states.values())
-        for p in st.paths
-    }
-    if req.path not in known:
-        raise HTTPException(400, "Path not found in any current job.")
-    subprocess.run(["open", "-R", req.path], check=False)
+    """Open the file in Finder.
+
+    v1.8: validate by path canonicalization + directory allow-list instead
+    of a live JOBS lookup. ``Path.resolve()`` collapses ``..`` so traversal
+    attempts (``<allowed>/../../../etc/passwd``) end up outside any allowed
+    root and are rejected with 403. Paths that don't exist on disk are
+    rejected with 404 to distinguish the failure modes.
+    """
+    try:
+        resolved = Path(req.path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError) as e:
+        raise HTTPException(400, f"Invalid path: {e}") from e
+
+    if not resolved.exists():
+        raise HTTPException(404, "Path does not exist on disk.")
+
+    roots = _reveal_allowed_roots()
+    if not any(resolved.is_relative_to(root) for root in roots):
+        raise HTTPException(403, "Path is not inside an allowed output directory.")
+
+    subprocess.run(["open", "-R", str(resolved)], check=False)
     return {"ok": True}
 
 
@@ -2805,6 +3330,24 @@ def main():
         "--allow-remote", action="store_true",
         help="Allow binding to non-loopback hosts (LAN/public). Default refuses for safety.",
     )
+    def _max_parallel(value: str) -> int:
+        try:
+            n = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                f"--max-parallel expects an integer, got {value!r}"
+            ) from exc
+        if not 1 <= n <= 64:
+            raise argparse.ArgumentTypeError(
+                f"--max-parallel must be between 1 and 64, got {n}"
+            )
+        return n
+
+    parser.add_argument(
+        "--max-parallel", type=_max_parallel, default=4,
+        help="Max URLs downloading simultaneously across all submissions "
+             "(1-64, default: 4).",
+    )
     args = parser.parse_args()
 
     # Refuse non-loopback bind without explicit opt-in.
@@ -2823,6 +3366,14 @@ def main():
 
     # Stash the default output dir for the index page to read.
     app.state.default_output_dir = args.output_dir
+
+    # v1.8: initialize the process-wide download worker pool. URLs from
+    # every submission share this one executor, so --max-parallel is a
+    # single global cap rather than a per-submission setting.
+    global _GLOBAL_EXECUTOR  # pylint: disable=global-statement
+    _GLOBAL_EXECUTOR = ThreadPoolExecutor(
+        max_workers=args.max_parallel, thread_name_prefix="audio-dl-worker"
+    )
 
     if not args.no_browser:
         # 0.0.0.0 / :: are bind-all addresses, not routable from a browser.
