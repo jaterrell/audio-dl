@@ -71,41 +71,79 @@ class TestIndex:
 
 def _valid_body(**overrides):
     body = {
-        "urls": "https://youtu.be/dQw4w9WgXcQ",
-        "format": "mp3",
+        "urls": [{"url": "https://youtu.be/dQw4w9WgXcQ", "format": "mp3"}],
         "output_dir": "/tmp/audio-dl-test",
         "playlist": False,
         "force": False,
         "fragments": 4,
-        "jobs": 1,
     }
     body.update(overrides)
     return body
 
 
-class TestPostJobsValidation:
-    def test_empty_urls_400(self):
-        r = client.post("/jobs", json=_valid_body(urls=""), headers=_csrf_headers())
+class TestPostJobsShapeV1_9:  # pylint: disable=invalid-name
+    """v1.9 POST shape: per-URL format. Legacy shape returns 422."""
+
+    def test_new_shape_accepts_per_url_format(self, tmp_path):
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [
+            {"url": "https://youtu.be/AAA", "format": "m4a"},
+            {"url": "https://youtu.be/BBB", "format": "mp4"},
+        ]
+        with patch("audio_dl_ui._run_one"):
+            r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 200, r.text
+        job_id = r.json()["job_id"]
+        job = JOBS[job_id]
+        assert job.url_states["https://youtu.be/AAA"].media_format == "m4a"
+        assert job.url_states["https://youtu.be/BBB"].media_format == "mp4"
+
+    def test_legacy_shape_rejected(self):
+        body = {
+            "urls": "https://youtu.be/dQw4w9WgXcQ",  # old: string
+            "format": "mp3",                          # old: top-level
+            "output_dir": "/tmp/audio-dl-test",
+        }
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 422  # Pydantic shape mismatch
+
+    def test_empty_urls_list_returns_400(self):
+        body = _valid_body()
+        body["urls"] = []
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
         assert r.status_code == 400
         assert "url" in r.json()["detail"].lower()
 
-    def test_whitespace_only_urls_400(self):
-        r = client.post("/jobs", json=_valid_body(urls="   \n  \t  "), headers=_csrf_headers())
+    def test_unknown_format_in_urlspec_returns_400(self):
+        body = _valid_body()
+        body["urls"] = [{"url": "https://youtu.be/CCC", "format": "mp3x"}]
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
         assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "mp3x" in detail
+        assert "https://youtu.be/CCC" in detail
 
-    def test_bad_format_400(self):
-        r = client.post("/jobs", json=_valid_body(format="ogg"), headers=_csrf_headers())
-        assert r.status_code == 400
-        assert "format" in r.json()["detail"].lower()
 
-    def test_jobs_too_low_400(self):
-        r = client.post("/jobs", json=_valid_body(jobs=0), headers=_csrf_headers())
-        assert r.status_code == 400
+class TestPostJobsBatchFormats:
+    """End-to-end exercise of what the JS paste handler would POST."""
 
-    def test_jobs_too_high_400(self):
-        r = client.post("/jobs", json=_valid_body(jobs=9), headers=_csrf_headers())
-        assert r.status_code == 400
+    def test_mixed_format_batch_accepted(self, tmp_path):
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [
+            {"url": "https://yt.com/abc",  "format": "m4a"},
+            {"url": "https://yt.com/abc2", "format": "mp3"},
+            {"url": "https://yt.com/abc3", "format": "mp4"},
+        ]
+        with patch("audio_dl_ui._run_one"):
+            r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 200
+        job = JOBS[r.json()["job_id"]]
+        assert job.url_states["https://yt.com/abc"].media_format  == "m4a"
+        assert job.url_states["https://yt.com/abc2"].media_format == "mp3"
+        assert job.url_states["https://yt.com/abc3"].media_format == "mp4"
 
+
+class TestPostJobsValidation:
     def test_fragments_too_low_400(self):
         r = client.post("/jobs", json=_valid_body(fragments=0), headers=_csrf_headers())
         assert r.status_code == 400
@@ -114,12 +152,11 @@ class TestPostJobsValidation:
         r = client.post("/jobs", json=_valid_body(fragments=17), headers=_csrf_headers())
         assert r.status_code == 400
 
-    def test_unwritable_output_dir_400(self):
-        # /dev/null/foo will fail os.makedirs with NotADirectoryError on macOS/Linux
+    def test_output_dir_unwritable_400(self):
         r = client.post("/jobs", json=_valid_body(output_dir="/dev/null/cant-make-this"),
                         headers=_csrf_headers())
         assert r.status_code == 400
-        assert "output" in r.json()["detail"].lower()
+        assert "writable" in r.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -149,16 +186,15 @@ class TestPostJobsHappyPath:
 
         monkeypatch.setattr(ui, "download_media", _blocking_download)
 
-        body = _valid_body(
-            urls="https://youtu.be/AAA https://youtu.be/BBB",
-            output_dir=str(tmp_path),
-            jobs=2,
-        )
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [
+            {"url": "https://youtu.be/AAA", "format": "mp3"},
+            {"url": "https://youtu.be/BBB", "format": "mp3"},
+        ]
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         job_id = r.json()["job_id"]
         job = JOBS[job_id]
         assert job.media_format == "mp3"
-        assert job.jobs == 2
         assert set(job.url_states.keys()) == {"https://youtu.be/AAA", "https://youtu.be/BBB"}
         # All URLs should be in a known valid state (pending or downloading).
         valid_initial = {"pending", "downloading"}
@@ -182,8 +218,7 @@ class TestProgressHook:
             playlist=False,
             force=False,
             fragments=4,
-            jobs=1,
-            url_states={url: UrlState(url=url)},
+            url_states={url: UrlState(url=url, media_format="mp3")},
         )
         return job, job.url_states[url]
 
@@ -308,10 +343,8 @@ class TestSseHappyPath:
 
         monkeypatch.setattr(ui, "download_media", fake_download)
 
-        body = _valid_body(
-            urls="https://youtu.be/AAA",
-            output_dir=str(tmp_path),
-        )
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [{"url": "https://youtu.be/AAA", "format": "mp3"}]
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         job_id = r.json()["job_id"]
 
@@ -373,8 +406,8 @@ class TestSseBroadcast:
         url = "https://youtu.be/AAA"
         job = JobState(
             id="bc", media_format="mp3", output_dir="/tmp",
-            playlist=False, force=False, fragments=4, jobs=1,
-            url_states={url: UrlState(url=url)},
+            playlist=False, force=False, fragments=4,
+            url_states={url: UrlState(url=url, media_format="mp3")},
         )
         return job
 
@@ -423,7 +456,8 @@ class TestSseBroadcast:
             return [fake_path]
 
         monkeypatch.setattr(ui, "download_media", fake_download)
-        body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [{"url": "https://youtu.be/AAA", "format": "mp3"}]
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         job_id = r.json()["job_id"]
 
@@ -526,7 +560,8 @@ class TestCancel:
 
         monkeypatch.setattr(ui, "download_media", fake_download)
 
-        body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [{"url": "https://youtu.be/AAA", "format": "mp3"}]
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         job_id = r.json()["job_id"]
 
@@ -586,8 +621,12 @@ class TestReveal:
 
         job = JobState(
             id="manual", media_format="mp3", output_dir=str(tmp_path),
-            playlist=False, force=False, fragments=4, jobs=1,
-            url_states={"u": UrlState(url="u", paths=[path], status="completed")},
+            playlist=False, force=False, fragments=4,
+            url_states={
+                "u": UrlState(
+                    url="u", media_format="mp3", paths=[path], status="completed",
+                ),
+            },
         )
         JOBS["manual"] = job
 
@@ -756,7 +795,8 @@ class TestRunOneSanitizeError:
         # download_media shouldn't be reached (sanitize error fires first)
         monkeypatch.setattr(ui, "download_media", lambda *a, **kw: [])
 
-        body = _valid_body(urls="https://youtu.be/AAA", output_dir=str(tmp_path))
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [{"url": "https://youtu.be/AAA", "format": "mp3"}]
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         assert r.status_code == 200, f"POST /jobs failed with {r.status_code}: {r.text}"
         job_id = r.json()["job_id"]
@@ -792,6 +832,41 @@ class TestRunOneSanitizeError:
         assert err and ("intentional sanitize_url failure" in err or "sanitize" in err.lower())
 
 
+class TestRunOnePerUrlFormat:
+    def test_run_one_uses_url_state_format_not_job_default(self, tmp_path):
+        """v1.9: _run_one reads url_state.media_format, not job.media_format."""
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [
+            {"url": "https://youtu.be/AAA", "format": "m4a"},
+            {"url": "https://youtu.be/BBB", "format": "mp4"},
+        ]
+        captured_formats = {}
+
+        def fake_download(clean_url, *, media_format, **_kw):
+            captured_formats[clean_url] = media_format
+            return [str(tmp_path / f"{media_format}.{media_format}")]
+
+        with patch("audio_dl_ui.download_media", side_effect=fake_download):
+            r = client.post("/jobs", json=body, headers=_csrf_headers())
+            assert r.status_code == 200
+            job_id = r.json()["job_id"]
+            # Wait for the supervisor to mark the job completed.
+            # `JobState.completed` is set in `_supervise` after wait(futures);
+            # the established pattern (see TestSseBroadcast line 434 and
+            # TestRunOneSanitizeError line 768) is a 50x 0.05s poll = 2.5s
+            # ceiling, which is plenty for two stub downloads.
+            for _ in range(50):
+                if JOBS[job_id].completed:
+                    break
+                time.sleep(0.05)
+            assert JOBS[job_id].completed, "job did not complete in time"
+
+        # captured_formats is keyed by clean (sanitized) URL — sanitize_url
+        # normalizes youtu.be/X -> www.youtube.com/watch?v=X.
+        assert captured_formats["https://www.youtube.com/watch?v=AAA"] == "m4a"
+        assert captured_formats["https://www.youtube.com/watch?v=BBB"] == "mp4"
+
+
 # ---------------------------------------------------------------------------
 # /reveal dict-mutation race (Codex [P2])
 # ---------------------------------------------------------------------------
@@ -817,7 +892,7 @@ class TestRevealSnapshotsJobs:
 
         racer = JobState(
             id="racer", media_format="mp3", output_dir=str(tmp_path),
-            playlist=False, force=False, fragments=4, jobs=1,
+            playlist=False, force=False, fragments=4,
             url_states=_MutatingStates(),
         )
 
@@ -854,8 +929,8 @@ class TestQueueBound:
         url = "https://youtu.be/AAA"
         job = JobState(
             id="qb", media_format="mp3", output_dir="/tmp",
-            playlist=False, force=False, fragments=4, jobs=1,
-            url_states={url: UrlState(url=url)},
+            playlist=False, force=False, fragments=4,
+            url_states={url: UrlState(url=url, media_format="mp3")},
         )
         sub = _q.Queue(maxsize=maxsize)
         with job.lock:
@@ -1480,7 +1555,7 @@ class TestPickThumbnailUrl:
 
 class TestUrlStateNewFields:
     def test_defaults(self):
-        s = UrlState(url="https://example/x")
+        s = UrlState(url="https://example/x", media_format="mp3")
         assert s.title is None
         assert s.uploader is None
         assert s.duration is None
@@ -1493,8 +1568,8 @@ class TestUrlStateNewFields:
     def test_log_independence_across_instances(self):
         # Regression guard: mutable default would share one deque across
         # all UrlState instances. Use field(default_factory=...).
-        a = UrlState(url="https://example/a")
-        b = UrlState(url="https://example/b")
+        a = UrlState(url="https://example/a", media_format="mp3")
+        b = UrlState(url="https://example/b", media_format="mp3")
         a.log.append({"ts": 1.0, "level": "info", "text": "hello"})
         assert len(b.log) == 0
 
@@ -1506,8 +1581,8 @@ class TestUrlStateNewFields:
 def _fresh_job(url: str = "https://example/x") -> JobState:
     job = JobState(
         id="j1", media_format="mp3", output_dir="/tmp",
-        playlist=False, force=False, fragments=4, jobs=1,
-        url_states={url: UrlState(url=url)},
+        playlist=False, force=False, fragments=4,
+        url_states={url: UrlState(url=url, media_format="mp3")},
     )
     return job
 
@@ -2044,6 +2119,27 @@ class TestSnapshotNewFields:
         assert u["log"] == [{"ts": 1.0, "level": "info", "text": "[hls] fragment 1"}]
 
 
+class TestSnapshotPerUrlFormat:
+    def test_snapshot_includes_per_url_media_format_and_default(self, tmp_path):
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [
+            {"url": "https://youtu.be/AAA", "format": "m4a"},
+            {"url": "https://youtu.be/BBB", "format": "mp4"},
+        ]
+        with patch("audio_dl_ui._run_one"):
+            r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+        from audio_dl_ui import _build_snapshot
+        snap = _build_snapshot(JOBS[job_id])
+        formats_by_url = {u["url"]: u["media_format"] for u in snap["urls"]}
+        assert formats_by_url == {
+            "https://youtu.be/AAA": "m4a",
+            "https://youtu.be/BBB": "mp4",
+        }
+        assert snap["default_format"] == "m4a"  # first UrlSpec's format
+
+
 class TestThumbCleanup:
     def test_thumb_dir_removed_after_completion_and_disconnect(self, tmp_path, monkeypatch):
         from audio_dl_ui import _supervise, _thumb_dir, JOBS
@@ -2193,14 +2289,16 @@ class TestGlobalExecutorCap:
         capped = ThreadPoolExecutor(max_workers=2, thread_name_prefix="test-cap")
         ui._GLOBAL_EXECUTOR = capped
         try:
-            body_a = _valid_body(
-                urls="https://youtu.be/A1 https://youtu.be/A2",
-                output_dir=str(tmp_path),
-            )
-            body_b = _valid_body(
-                urls="https://youtu.be/B1 https://youtu.be/B2",
-                output_dir=str(tmp_path),
-            )
+            body_a = _valid_body(output_dir=str(tmp_path))
+            body_a["urls"] = [
+                {"url": "https://youtu.be/A1", "format": "mp3"},
+                {"url": "https://youtu.be/A2", "format": "mp3"},
+            ]
+            body_b = _valid_body(output_dir=str(tmp_path))
+            body_b["urls"] = [
+                {"url": "https://youtu.be/B1", "format": "mp3"},
+                {"url": "https://youtu.be/B2", "format": "mp3"},
+            ]
             r_a = client.post("/jobs", json=body_a, headers=_csrf_headers())
             r_b = client.post("/jobs", json=body_b, headers=_csrf_headers())
             assert r_a.status_code == 200

@@ -68,6 +68,7 @@ class UrlState:  # pylint: disable=too-many-instance-attributes
     """Per-URL download state within a job, updated by progress hooks."""
 
     url: str
+    media_format: str        # v1.9 — per-URL target format
     sanitized_url: str = ""
     status: Literal["pending", "downloading", "completed", "failed", "cancelled"] = "pending"
     percent: float = 0.0
@@ -119,7 +120,6 @@ class JobState:  # pylint: disable=too-many-instance-attributes
     playlist: bool
     force: bool
     fragments: int
-    jobs: int
     url_states: dict[str, UrlState]
     subscribers: list["queue.Queue[dict]"] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -497,7 +497,7 @@ def _run_one(job: JobState, raw_url: str) -> None:
 
         paths = download_media(
             clean,
-            media_format=job.media_format,
+            media_format=url_state.media_format,
             output_dir=job.output_dir,
             playlist=job.playlist,
             force=job.force,
@@ -865,6 +865,92 @@ _INDEX_CSS_BASE = """  :root {
     border: 1px solid var(--frame); padding: 0 7px;
     font: inherit; font-size: var(--fs-sm); cursor: pointer;
   }
+  /* ── Queue row builder (per-URL format) ── */
+  .urls-zone-header {
+    display: flex; gap: 12px; align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .urls-count { color: var(--accent); }
+  .urls-hint { font-size: 0.85em; }
+
+  .queue-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
+  .queue-row, .queue-input-row {
+    display: grid;
+    grid-template-columns: 16px 1fr 12ch 22px;
+    align-items: center;
+    gap: 8px;
+  }
+  .queue-gutter { color: var(--accent); text-align: center; }
+  .queue-gutter-add { color: var(--dim); }
+  .queue-url {
+    font-family: inherit;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .queue-url-domain { color: var(--accent); }
+  .queue-url-path   { color: var(--dim); }
+  .queue-url.invalid {
+    border-bottom: 1px dashed var(--err);
+  }
+  .queue-url-input {
+    background: transparent;
+    border: 1px solid var(--dim);
+    color: var(--fg);
+    font-family: inherit;
+    padding: 2px 6px;
+  }
+  .queue-url-input.invalid { border-color: var(--err); }
+  .queue-format-select, .default-format-select {
+    background: transparent;
+    border: 1px solid var(--dim);
+    color: var(--fg);
+    font-family: inherit;
+    padding: 1px 4px;
+    width: 12ch;
+  }
+  .queue-format-select:disabled {
+    opacity: 0.6;
+  }
+  .queue-remove {
+    background: transparent;
+    border: none;
+    color: var(--dim);
+    cursor: pointer;
+    font-size: 1em;
+  }
+  .queue-remove:hover { color: var(--accent); }
+  .queue-remove-spacer { width: 22px; }
+
+  .default-strip {
+    display: flex; gap: 12px; align-items: center;
+    margin: 6px 0 10px 0;
+    font-size: 0.9em;
+  }
+  .strip-action {
+    background: transparent;
+    border: 1px dashed var(--dim);
+    color: var(--fg);
+    font-family: inherit;
+    cursor: pointer;
+    padding: 1px 8px;
+  }
+  .strip-action:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* In-Flight card format chip — mirrors history-badge typography. */
+  .card-format-chip {
+    display: inline-block;
+    border: 1px solid var(--dim);
+    padding: 0 6px;
+    margin-left: 8px;
+    font-size: 0.8em;
+    text-transform: uppercase;
+  }
+  .card-format-chip[data-kind="lossless"] { color: var(--accent); border-color: var(--accent); }
+  .card-format-chip[data-kind="video"]    { color: var(--fg);     border-color: var(--fg); }
+  .card-format-chip[data-kind="lossy"]    { color: var(--dim);    border-color: var(--dim); }
+  .card-format-chip:empty { display: none; }
   /* ── Job panel ── */
   #jobpanel { min-height: 0; }
   #jobpanel[hidden] { display: none; }
@@ -1916,12 +2002,30 @@ _INDEX_HTML_BODY = """<div id="status-bar">
   <div class="frame"><span class="frame-corner">┌─</span><span class="panel-title"><span class="pt-bracket">[ </span><span class="pt-label">INPUT</span><span class="pt-bracket"> ]</span></span><span class="frame-fill"></span><span class="theme-btn" id="theme-btn"><span class="pt-bracket">[ </span>theme: <span id="theme-current">phosphor</span> ▾<span class="pt-bracket"> ]</span></span><span class="frame-fill"></span><span class="frame-corner">─┐</span></div>
   <form id="dl">
     <div class="body-section">
-      <div class="field-line"><span class="label">urls</span><span class="marker">▸</span> <textarea class="field" id="urls" name="urls" placeholder="https://youtu.be/...&#10;https://soundcloud.com/..." required></textarea></div>
-      <div class="field-line"><span class="label">format</span><span class="marker">▸</span> <select class="field" id="format" name="format" style="max-width:18ch;">__FORMAT_OPTIONS__</select></div>
+      <div class="urls-zone-header">
+        <span class="label">urls</span>
+        <span class="urls-count"><span id="queue-count">0</span> in queue</span>
+        <span class="dim urls-hint">↵ to add · paste many lines to split</span>
+      </div>
+      <div id="queue-list" class="queue-list"></div>
+      <div class="queue-input-row">
+        <span class="queue-gutter queue-gutter-add">+</span>
+        <input type="text" id="add-input" class="queue-url-input"
+               placeholder="paste or type a URL…" autocomplete="off">
+        <select class="queue-format-select" id="add-input-format" disabled>__FORMAT_OPTIONS__</select>
+        <span class="queue-remove-spacer"></span>
+      </div>
+      <div class="default-strip">
+        <span class="dim">default format for new URLs:</span>
+        <select id="default-format" class="default-format-select">__FORMAT_OPTIONS__</select>
+        <button type="button" id="set-all-default" class="strip-action">set all rows → default</button>
+        <button type="button" id="clear-all" class="strip-action">clear all</button>
+      </div>
+
       <div class="field-line"><span class="label">output</span><span class="marker">▸</span> <input class="field" id="output_dir" name="output_dir" type="text" value="__DEFAULT_OUTPUT_DIR__" required></div>
       <div class="field-line"><span class="label">fragments</span><span class="marker">▸</span> <input class="slider" id="fragments" name="fragments" type="range" min="1" max="16" value="4"> <span id="fragments_val" class="dim">4</span></div>
       <div class="field-line"><span class="label">flags</span><span class="marker">▸</span> <label style="margin-right:12px;"><input type="checkbox" id="playlist" name="playlist"> playlist</label> <label><input type="checkbox" id="force" name="force"> overwrite</label></div>
-      <div class="field-line" style="margin-top:6px;"><span class="label"></span><button type="submit" class="tui-btn" id="submit">[ download ]</button> <span class="dim">⌘↵</span></div>
+      <div class="field-line" style="margin-top:6px;"><span class="label"></span><button type="submit" class="tui-btn" id="submit">[ SUBMIT <span id="submit-count">0</span> ]</button> <span class="dim">⌘↵</span></div>
       <div class="field-line" id="submit-notice-row" hidden><span class="label"></span><span class="marker">▸</span> <span id="submit-notice" class="dim"></span></div>
     </div>
   </form>
@@ -1980,6 +2084,7 @@ _INDEX_HTML_BODY = """<div id="status-bar">
       <header class="card-head">
         <span class="card-title"></span>
         <span class="card-meta"></span>
+        <span class="card-format-chip"></span>
         <span class="card-badge">[--]</span>
       </header>
       <div class="card-progress">
@@ -2027,6 +2132,160 @@ _INDEX_JS = """const THEMES = [
   const rows = $('rows');
   const summary = $('job-summary');
   let counts = { done: 0, active: 0, fail: 0, queued: 0 };
+
+  // ── v1.9 row-builder state ──────────────────────────────────────────
+  const queue = [];          // [{ id, url, format, error }]
+  let nextRowId = 1;
+  const ALL_FORMATS_JS = new Set(['mp3','m4a','flac','alac','opus','wav','mp4']);
+  let defaultFormat = 'm4a';
+
+  function isValidUrl(s) {
+    return /^https?:\\/\\//i.test(s);
+  }
+
+  function renderQueue() {
+    const list = $('queue-list');
+    list.innerHTML = '';
+    for (const row of queue) {
+      const el = document.createElement('div');
+      el.className = 'queue-row';
+      el.dataset.rowId = row.id;
+      el.innerHTML = (
+        '<span class="queue-gutter">▸</span>' +
+        '<span class="queue-url' + (row.error ? ' invalid' : '') + '"' +
+              (row.error ? ' title="' + escapeHtml(row.error) + '"' : '') + '>' +
+          escapeHtml(row.url) +
+        '</span>' +
+        '<select class="queue-format-select">' + formatOptionsHTML(row.format) + '</select>' +
+        '<button type="button" class="queue-remove" title="remove">×</button>'
+      );
+      el.querySelector('.queue-format-select').addEventListener('change', (e) => {
+        row.format = e.target.value;
+      });
+      el.querySelector('.queue-remove').addEventListener('click', () => {
+        const idx = queue.findIndex(r => r.id === row.id);
+        if (idx >= 0) { queue.splice(idx, 1); renderQueue(); }
+      });
+      list.appendChild(el);
+    }
+    $('queue-count').textContent = String(queue.length);
+    $('submit-count').textContent = String(queue.filter(r => !r.error).length);
+    const submitBtn = $('submit');
+    submitBtn.disabled = queue.length === 0 || queue.some(r => r.error);
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // Build a fresh <option> string for a per-row select with `selected` set
+  // on the row's current format. Uses the same ALL_FORMATS set the server
+  // exposes via __FORMAT_OPTIONS__, but rebuilds here so each row's select
+  // can be initialized with a default.
+  const ALL_FORMATS_LIST = Array.from(ALL_FORMATS_JS);
+  function formatOptionsHTML(selected) {
+    return ALL_FORMATS_LIST
+      .map(f => '<option value="' + f + '"' + (f === selected ? ' selected' : '') + '>' + f + '</option>')
+      .join('');
+  }
+
+  function commitRow(url, format) {
+    const row = {
+      id: 'r_' + (nextRowId++),
+      url,
+      format: format || defaultFormat,
+      error: isValidUrl(url) ? null : 'must start with http:// or https://',
+    };
+    queue.push(row);
+    renderQueue();
+  }
+
+  function parseLine(line) {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+    const parts = trimmed.split(/\\s+/);
+    if (parts.length >= 2) {
+      const last = parts[parts.length - 1].toLowerCase();
+      if (ALL_FORMATS_JS.has(last)) {
+        return { url: parts.slice(0, -1).join(' '), format: last };
+      }
+    }
+    return { url: trimmed, format: defaultFormat };
+  }
+
+  const addInput = $('add-input');
+  const addInputFormat = $('add-input-format');
+
+  function syncAddInputFormat() {
+    addInputFormat.value = defaultFormat;
+  }
+
+  addInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = addInput.value.trim();
+      if (!v) return;
+      if (!isValidUrl(v)) {
+        addInput.classList.add('invalid');
+        addInput.title = 'must start with http:// or https://';
+        return;
+      }
+      addInput.classList.remove('invalid');
+      addInput.title = '';
+      commitRow(v, defaultFormat);
+      addInput.value = '';
+    }
+  });
+
+  addInput.addEventListener('input', () => {
+    if (addInput.classList.contains('invalid')) {
+      addInput.classList.remove('invalid');
+      addInput.title = '';
+    }
+  });
+
+  addInput.addEventListener('blur', () => {
+    const v = addInput.value.trim();
+    if (v && isValidUrl(v)) {
+      commitRow(v, defaultFormat);
+      addInput.value = '';
+    }
+  });
+
+  addInput.addEventListener('paste', (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData('text');
+    if (!text) return;
+    // If single line with no newline, fall through to default browser behavior
+    // (user is editing a single field, not bulk-pasting).
+    if (!/\\n/.test(text)) return;
+    e.preventDefault();
+    const lines = text.split(/\\n/);
+    for (const line of lines) {
+      const parsed = parseLine(line);
+      if (parsed) commitRow(parsed.url, parsed.format);
+    }
+    addInput.value = '';
+  });
+
+  $('set-all-default').addEventListener('click', () => {
+    for (const row of queue) row.format = defaultFormat;
+    renderQueue();
+  });
+
+  $('clear-all').addEventListener('click', () => {
+    queue.length = 0;
+    renderQueue();
+  });
+
+  $('default-format').addEventListener('change', (e) => {
+    defaultFormat = e.target.value;
+    syncAddInputFormat();
+  });
+  $('default-format').value = defaultFormat;   // align strip with JS state on first paint
+  syncAddInputFormat();
+  renderQueue();   // initial render — shows submit count = 0
 
   // ── Status indicator (top bar) ───────────────────────────────────────
   const statusIndicator = $('status-indicator');
@@ -2249,6 +2508,20 @@ _INDEX_JS = """const THEMES = [
       li.textContent = line.text;
       ul.appendChild(li);
     }
+
+    // Format chip — populated once from urlMeta or snapshot media_format.
+    const chip = el.querySelector('.card-format-chip');
+    const fmt = (urlMeta[url] && urlMeta[url].format) || (st && st.media_format) || '';
+    if (fmt) {
+      chip.textContent = fmt.toUpperCase();
+      const kind =
+        ['flac','alac','wav'].includes(fmt) ? 'lossless' :
+        fmt === 'mp4' ? 'video' : 'lossy';
+      chip.setAttribute('data-kind', kind);
+    } else {
+      chip.textContent = '';
+      chip.removeAttribute('data-kind');
+    }
   }
 
   // Derive counts from current card states. Idempotent — called after every
@@ -2434,13 +2707,12 @@ _INDEX_JS = """const THEMES = [
 
   async function historyRedl(entry) {
     await submitJob({
-      urlsText: entry.url,
-      format: entry.format || $('format').value,
+      rows: [{ url: entry.url, format: entry.format || defaultFormat }],
       output_dir: $('output_dir').value,
       playlist: $('playlist').checked,
       force: $('force').checked,
       fragments: parseInt($('fragments').value, 10),
-      clearTextarea: false,
+      clearQueueOnSuccess: false,
     });
   }
 
@@ -2549,6 +2821,7 @@ _INDEX_JS = """const THEMES = [
         cardState[u.url] = {
           url_idx: i,
           phase,
+          media_format: u.media_format,
           title: u.title, uploader: u.uploader, duration: u.duration,
           thumbnail_ready: u.thumbnail_ready, log: u.log || [],
           percent: u.percent, speed: u.speed, eta: u.eta,
@@ -2556,6 +2829,12 @@ _INDEX_JS = """const THEMES = [
           paths: u.paths,
         };
         renderCard(u.url);
+      }
+      for (const u of ev.urls) {
+        urlMeta[u.url] = urlMeta[u.url] || {};
+        if (u.media_format && !urlMeta[u.url].format) {
+          urlMeta[u.url].format = u.media_format;
+        }
       }
       recountFromCards();
       if (ev.complete) {
@@ -2646,17 +2925,17 @@ _INDEX_JS = """const THEMES = [
   $('dl').addEventListener('submit', async (e) => {
     e.preventDefault();
     await submitJob({
-      urlsText: $('urls').value,
-      format: $('format').value,
+      rows: queue.filter(r => !r.error).map(r => ({ url: r.url, format: r.format })),
       output_dir: $('output_dir').value,
       playlist: $('playlist').checked,
       force: $('force').checked,
       fragments: parseInt($('fragments').value, 10),
-      clearTextarea: true,
+      clearQueueOnSuccess: true,
     });
   });
 
   async function submitJob(opts) {
+    if (!opts.rows || opts.rows.length === 0) return;
     $('submit').disabled = true;
     $('cancel').disabled = false;
     stopSpinner();
@@ -2666,10 +2945,6 @@ _INDEX_JS = """const THEMES = [
     // / url_failed moves them off.
     refreshSummary();
 
-    // Format is tracked per-URL so re-downloads pick the format used at
-    // the original submit time (history rows replay through this path too).
-    const rawUrls = opts.urlsText.split(/\\s+/).map(s => s.trim()).filter(Boolean);
-
     // Dedupe against URLs currently in flight. cardState[url] entries exist
     // only for live cards (moveToHistory deletes them on terminal events),
     // so this catches both raw form submits and history re-downloads that
@@ -2677,27 +2952,29 @@ _INDEX_JS = """const THEMES = [
     // of the same URL would share urlMeta/cardState keys with the first and
     // the two streams' events would interleave on one entry.
     const inFlight = new Set(Object.keys(cardState));
-    const acceptedUrls = rawUrls.filter(u => !inFlight.has(u));
-    const skippedCount = rawUrls.length - acceptedUrls.length;
+    const acceptedRows = opts.rows.filter(r => !inFlight.has(r.url));
+    const skippedCount = opts.rows.length - acceptedRows.length;
     if (skippedCount > 0) {
       flashSubmitNotice(
         `${skippedCount} URL${skippedCount > 1 ? 's' : ''} already in flight, skipped`
       );
     }
-    if (acceptedUrls.length === 0) {
+    if (acceptedRows.length === 0) {
       $('submit').disabled = false;
       if (activeStreams.size === 0) $('cancel').disabled = true;
       return;
     }
 
-    for (const u of acceptedUrls) {
-      urlMeta[u] = urlMeta[u] || {};
-      urlMeta[u].format = opts.format;
+    // Format is tracked per-URL so re-downloads pick the format used at
+    // the original submit time (history rows replay through this path too),
+    // and the In Flight chip can render it from urlMeta on url_started.
+    for (const r of acceptedRows) {
+      urlMeta[r.url] = urlMeta[r.url] || {};
+      urlMeta[r.url].format = r.format;
     }
 
     const body = {
-      urls: acceptedUrls.join('\\n'),
-      format: opts.format,
+      urls: acceptedRows,
       output_dir: opts.output_dir,
       playlist: opts.playlist,
       force: opts.force,
@@ -2725,7 +3002,11 @@ _INDEX_JS = """const THEMES = [
     }
     const {job_id} = await resp.json();
     currentJobId = job_id;
-    if (opts.clearTextarea) $('urls').value = '';
+    if (opts.clearQueueOnSuccess) {
+      queue.length = 0;
+      renderQueue();
+      $('add-input').value = '';
+    }
     const stream = new EventSource('/jobs/' + job_id + '/events?token=' + encodeURIComponent(CSRF_TOKEN));
     activeStreams.set(job_id, stream);
     stream.onmessage = (m) => {
@@ -2733,10 +3014,10 @@ _INDEX_JS = """const THEMES = [
       try { handleEvent(JSON.parse(m.data)); } catch (e) { console.error(e, m.data); }
     };
     stream.onerror = () => { /* EventSource auto-reconnects */ };
-    // Re-enable submit immediately so v1.8's mid-flight adds work. Each
-    // submission's lifecycle is now bounded by its own EventSource in the
-    // activeStreams map rather than a global busy flag.
-    $('submit').disabled = false;
+    // Re-enable submit only when queue has rows (renderQueue normally handles
+    // this, but post-submit with clearQueueOnSuccess we end at queue.length 0
+    // and want the button to stay disabled until the next row is added).
+    $('submit').disabled = queue.length === 0;
   }
 
   $('cancel').addEventListener('click', () => {
@@ -2965,16 +3246,23 @@ def _render_index(token: str, options: str, default_dir: str) -> str:
 app = FastAPI(title="audio-dl-ui", version=__version__)
 
 
-class JobRequest(BaseModel):
-    """Request body for POST /jobs."""
+class UrlSpec(BaseModel):
+    """One URL + the target format for that URL (v1.9 per-URL format)."""
 
-    urls: str
+    url: str
     format: str
+
+
+class JobRequest(BaseModel):
+    """Request body for POST /jobs (v1.9: per-URL format)."""
+
+    urls: list[UrlSpec]
     output_dir: str
     playlist: bool = False
     force: bool = False
     fragments: int = 4
-    jobs: int = 1
+    # NOTE: top-level `format` removed in v1.9 — each UrlSpec carries its own.
+    # NOTE: `jobs` removed in v1.9 — vestigial since v1.8 (global executor).
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2992,16 +3280,15 @@ async def index() -> HTMLResponse:
 @app.post("/jobs")
 async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dict:  # pylint: disable=unused-argument
     """Validate the request, register a JobState, return the job_id."""
-    # Parse URLs (whitespace-separated, drop blanks).
-    urls = [u.strip() for u in req.urls.split() if u.strip()]
-    if not urls:
+    if not req.urls:
         raise HTTPException(400, "At least one URL is required.")
-
-    if req.format not in ALL_FORMATS:
-        raise HTTPException(400, f"Unknown format: {req.format!r}. Must be one of {ALL_FORMATS}.")
-
-    if not 1 <= req.jobs <= 8:
-        raise HTTPException(400, "jobs must be in 1..8.")
+    for spec in req.urls:
+        if spec.format not in ALL_FORMATS:
+            raise HTTPException(
+                400,
+                f"Unknown format: {spec.format!r} for {spec.url!r}. "
+                f"Must be one of {ALL_FORMATS}.",
+            )
 
     if not 1 <= req.fragments <= 16:
         raise HTTPException(400, "fragments must be in 1..16.")
@@ -3013,15 +3300,23 @@ async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dic
         raise HTTPException(400, f"output_dir not writable: {e}") from e
 
     job_id = uuid.uuid4().hex
+    # Preserve order from the request. Same-URL submitted twice with
+    # different formats: last-wins (UI prevents duplicates today; tests
+    # may submit them).
+    url_states = {}
+    for spec in req.urls:
+        url_states[spec.url] = UrlState(url=spec.url, media_format=spec.format)
     job = JobState(
         id=job_id,
-        media_format=req.format,
+        # JobState.media_format keeps the submission's "default" — first spec's
+        # format. Downloads no longer read this; only the snapshot's
+        # default_format field does.
+        media_format=req.urls[0].format,
         output_dir=output_dir,
         playlist=req.playlist,
         force=req.force,
         fragments=req.fragments,
-        jobs=req.jobs,
-        url_states={u: UrlState(url=u) for u in urls},
+        url_states=url_states,
     )
     JOBS[job_id] = job
     _start_job(job)
@@ -3051,9 +3346,11 @@ def _build_snapshot(job: JobState) -> dict:
         "job_id": job.id,
         "complete": job.completed,
         "summary": summary,
+        "default_format": job.media_format,   # v1.9
         "urls": [
             {
                 "url": s.url,
+                "media_format": s.media_format,   # v1.9
                 "status": s.status,
                 "percent": s.percent,
                 "downloaded_bytes": s.downloaded_bytes,

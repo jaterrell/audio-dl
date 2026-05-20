@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.9.0 — per-URL format / single-screen row builder
+
+The form is now a row builder: each URL carries its own target format,
+set via a per-row dropdown. Mixed-format batches (music tracks + a
+YouTube video, different audio codecs) submit in one shot instead of
+one-format-per-submit.
+
+**UI:**
+- URLs zone is a list of rows with gutter marker · URL · format dropdown
+  · remove (`×`). The last row is always an empty input ready for the
+  next URL; pressing `↵` commits it.
+- Pasting multi-line text splits into N rows. A trailing format token
+  on a line (`mp3`, `m4a`, `flac`, `alac`, `opus`, `wav`, `mp4`,
+  case-insensitive) is stripped from the URL and pre-fills that row's
+  picker.
+- Default-format strip below the queue: `default format for new URLs:
+  [m4a ▾]` · `set all rows → default` · `clear all`. The default only
+  affects newly added rows unless explicitly applied.
+- In Flight cards gain a format chip in the header, color-bucketed by
+  lossy (mp3/m4a/opus) / lossless (flac/alac/wav) / video (mp4).
+- Submit button label reflects the row count: `[ SUBMIT N ]`.
+- History rows already carried per-URL format (v1.8); re-download
+  preserves it.
+
+**Server:**
+- `POST /jobs` body shape changed (breaking): `urls` is now
+  `list[{url, format}]`. Top-level `format` and the vestigial `jobs`
+  field are gone. The UI is the only client; CLI behavior is unchanged.
+- `UrlState` gained `media_format`. `_run_one` reads it per-URL instead
+  of the job-level default. `JobState.media_format` is retained as the
+  submission default and surfaces in `job_snapshot.default_format`.
+- `job_snapshot` events now include `media_format` per URL and
+  `default_format` at the top level for late-joining subscribers.
+
+**Non-goals (deliberately deferred):**
+- CLI per-URL format syntax (still single `-f`).
+- Smart per-platform format inference (`YouTube → mp4 automatically`).
+- Edit-on-click for committed rows (use `×` + re-add).
+- Persisting unsubmitted queue across browser refresh.
+- Live re-download with a different format from History.
+
 ## v1.8.0 — UX rearchitecture: three-zone UI, persistent history
 
 Replaces the v1.5–v1.7 single-pane card stack with a three-zone layout
