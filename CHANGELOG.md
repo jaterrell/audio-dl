@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.9.1 — Codex review follow-ups
+
+Two small correctness fixes from Codex's review of v1.9.0:
+
+- **Reject duplicate URLs in a single submission with 400** instead of
+  silently collapsing them via last-wins dict insertion. The UI already
+  dedupes against `cardState`; API consumers now get a clear error
+  ("Duplicate URL in submission: 'X'. Each URL may appear at most once
+  per request.") instead of having one of their rows quietly dropped.
+- **Submit button gating uses `renderQueue()` on success.** Previously
+  the tail of `submitJob` re-enabled the button based on
+  `queue.length === 0`. After a history re-download (which preserves the
+  queue), that could re-enable submit even when invalid rows remained,
+  letting the next submit silently drop them. `renderQueue()` honors the
+  full validity predicate.
+
 ## v1.9.0 — per-URL format / single-screen row builder
 
 The form is now a row builder: each URL carries its own target format,

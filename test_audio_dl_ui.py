@@ -123,6 +123,21 @@ class TestPostJobsShapeV1_9:  # pylint: disable=invalid-name
         assert "mp3x" in detail
         assert "https://youtu.be/CCC" in detail
 
+    def test_duplicate_urls_rejected(self):
+        # Same URL twice (potentially with different formats) silently
+        # collapsed to last-wins under v1.9.0; v1.9.1 rejects 400 so callers
+        # don't unknowingly lose requested work.
+        body = _valid_body()
+        body["urls"] = [
+            {"url": "https://youtu.be/DDD", "format": "m4a"},
+            {"url": "https://youtu.be/DDD", "format": "mp3"},
+        ]
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 400
+        detail = r.json()["detail"]
+        assert "https://youtu.be/DDD" in detail
+        assert "duplicate" in detail.lower()
+
 
 class TestPostJobsBatchFormats:
     """End-to-end exercise of what the JS paste handler would POST."""

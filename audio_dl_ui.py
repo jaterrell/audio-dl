@@ -3014,10 +3014,10 @@ _INDEX_JS = """const THEMES = [
       try { handleEvent(JSON.parse(m.data)); } catch (e) { console.error(e, m.data); }
     };
     stream.onerror = () => { /* EventSource auto-reconnects */ };
-    // Re-enable submit only when queue has rows (renderQueue normally handles
-    // this, but post-submit with clearQueueOnSuccess we end at queue.length 0
-    // and want the button to stay disabled until the next row is added).
-    $('submit').disabled = queue.length === 0;
+    // Refresh submit state via the queue's render path so invalid rows
+    // continue to disable submit (e.g., after a history re-download leaves
+    // pre-existing invalid rows in place).
+    renderQueue();
   }
 
   $('cancel').addEventListener('click', () => {
@@ -3282,6 +3282,7 @@ async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dic
     """Validate the request, register a JobState, return the job_id."""
     if not req.urls:
         raise HTTPException(400, "At least one URL is required.")
+    seen_urls: set[str] = set()
     for spec in req.urls:
         if spec.format not in ALL_FORMATS:
             raise HTTPException(
@@ -3289,6 +3290,16 @@ async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dic
                 f"Unknown format: {spec.format!r} for {spec.url!r}. "
                 f"Must be one of {ALL_FORMATS}.",
             )
+        if spec.url in seen_urls:
+            # Reject duplicates instead of silently dropping work via last-wins
+            # dict insertion. The UI's cardState dedupe prevents this in
+            # practice; API consumers get a clear error.
+            raise HTTPException(
+                400,
+                f"Duplicate URL in submission: {spec.url!r}. "
+                f"Each URL may appear at most once per request.",
+            )
+        seen_urls.add(spec.url)
 
     if not 1 <= req.fragments <= 16:
         raise HTTPException(400, "fragments must be in 1..16.")
@@ -3300,9 +3311,7 @@ async def post_jobs(req: JobRequest, _csrf: str = Depends(_require_csrf)) -> dic
         raise HTTPException(400, f"output_dir not writable: {e}") from e
 
     job_id = uuid.uuid4().hex
-    # Preserve order from the request. Same-URL submitted twice with
-    # different formats: last-wins (UI prevents duplicates today; tests
-    # may submit them).
+    # Preserve order from the request. Duplicates were rejected above.
     url_states = {}
     for spec in req.urls:
         url_states[spec.url] = UrlState(url=spec.url, media_format=spec.format)
