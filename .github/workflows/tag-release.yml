@@ -1,0 +1,98 @@
+name: Tag release
+
+# Create a v<X.Y.Z> tag on a specified main commit, after validating that
+# the commit's `__version__` matches. Used by the audio-dl PR watcher
+# routine to promote release commits to public — the routine's own
+# auth can dispatch this workflow but cannot create refs directly.
+# See: docs/superpowers/specs (PR watcher routine).
+#
+# Inputs:
+#   sha     — full 40-char SHA of the merge commit on main
+#   version — semver string without the `v` prefix (e.g., "2.0.1")
+#
+# Tagging fires mirror-public.yml on this repo, which mirrors the tag
+# to jaterrell/audio-dl, which fires release.yml on public to build
+# the `.app` and publish the GitHub release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA on main to tag"
+        required: true
+        type: string
+      version:
+        description: "Semver (no v prefix), e.g. 2.0.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        run: |
+          if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version '${{ inputs.version }}' — must be N.N.N"
+            exit 1
+          fi
+
+      - name: Validate SHA format
+        run: |
+          if ! [[ "${{ inputs.sha }}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Invalid SHA '${{ inputs.sha }}' — must be 40 hex chars"
+            exit 1
+          fi
+
+      - name: Verify SHA is on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS=$(gh api "repos/${{ github.repository }}/compare/${{ inputs.sha }}...main" --jq '.status')
+          case "$STATUS" in
+            ahead|identical)
+              echo "SHA is on main (compare status: $STATUS)"
+              ;;
+            *)
+              echo "::error::SHA ${{ inputs.sha }} is not on main (compare status: $STATUS)"
+              exit 1
+              ;;
+          esac
+
+      - name: Verify __version__ at SHA matches input
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ACTUAL=$(gh api "repos/${{ github.repository }}/contents/audio_dl.py?ref=${{ inputs.sha }}" --jq '.content' \
+                   | base64 -d \
+                   | grep -E '^__version__' \
+                   | head -1)
+          EXPECTED='__version__ = "${{ inputs.version }}"'
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::__version__ mismatch at ${{ inputs.sha }}"
+            echo "  got:      [$ACTUAL]"
+            echo "  expected: [$EXPECTED]"
+            exit 1
+          fi
+          echo "Version match confirmed"
+
+      - name: Refuse if tag already exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh api "repos/${{ github.repository }}/git/refs/tags/v${{ inputs.version }}" --jq '.ref' 2>/dev/null | grep -q "v${{ inputs.version }}"; then
+            echo "::error::Tag v${{ inputs.version }} already exists; refusing to clobber"
+            exit 1
+          fi
+
+      - name: Create tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/v${{ inputs.version }}" \
+            -f sha="${{ inputs.sha }}"
+          echo "Tagged v${{ inputs.version }} at ${{ inputs.sha }}"
