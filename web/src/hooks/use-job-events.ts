@@ -15,6 +15,18 @@ interface BackendUrl {
   paths: string[];
   error: string | null;
   thumb_id: string | null;
+  title: string | null;
+  uploader: string | null;
+}
+
+interface UrlMetadataEvent {
+  type: "url_metadata";
+  job_id: string;
+  url: string;
+  title?: string | null;
+  uploader?: string | null;
+  duration?: number | null;
+  thumbnail_ready?: boolean;
 }
 
 interface JobSnapshotEvent {
@@ -66,8 +78,11 @@ type AnyEvent =
   | UrlStartedEvent
   | UrlCompletedEvent
   | UrlFailedEvent
+  | UrlMetadataEvent
   | JobCompletedEvent
   | { type: string };
+
+const TERMINAL: UrlStateName[] = ["completed", "failed", "cancelled"];
 
 function mapUrlState(b: BackendUrl): UrlState {
   return {
@@ -80,6 +95,8 @@ function mapUrlState(b: BackendUrl): UrlState {
     paths: b.paths ?? [],
     error: b.error ?? null,
     thumb_id: b.thumb_id ?? null,
+    title: b.title ?? null,
+    uploader: b.uploader ?? null,
   };
 }
 
@@ -116,8 +133,25 @@ export function useJobEvents(jobId: string) {
         try {
           const event = JSON.parse(e.data) as AnyEvent;
           applyEvent(queryClient, jobId, event);
+          // Close on terminal — the backend has already closed its end of the
+          // stream; without this, EventSource auto-reconnects and we replay
+          // the same terminal snapshot in an infinite loop.
+          const snapshot = queryClient.getQueryData<JobSnapshot>(["job", jobId]);
+          if (snapshot && TERMINAL.includes(snapshot.state)) {
+            es?.close();
+            es = null;
+          }
         } catch {
           /* ignore malformed */
+        }
+      };
+      // EventSource also fires onerror when the server closes the stream;
+      // suppress the implicit reconnect for terminal jobs by closing here too.
+      es.onerror = () => {
+        const snapshot = queryClient.getQueryData<JobSnapshot>(["job", jobId]);
+        if (snapshot && TERMINAL.includes(snapshot.state)) {
+          es?.close();
+          es = null;
         }
       };
     })();
@@ -155,9 +189,15 @@ function applyEvent(
     ev.type === "progress" ||
     ev.type === "url_started" ||
     ev.type === "url_completed" ||
-    ev.type === "url_failed"
+    ev.type === "url_failed" ||
+    ev.type === "url_metadata"
   ) {
-    const e = ev as ProgressEvent | UrlStartedEvent | UrlCompletedEvent | UrlFailedEvent;
+    const e = ev as
+      | ProgressEvent
+      | UrlStartedEvent
+      | UrlCompletedEvent
+      | UrlFailedEvent
+      | UrlMetadataEvent;
     const urls = prev.urls.map((u): UrlState => {
       if (u.url !== (e as { url: string }).url) return u;
       const next: UrlState = { ...u };
@@ -180,6 +220,11 @@ function applyEvent(
         const f = e as UrlFailedEvent;
         next.state = "failed";
         if (typeof f.error === "string") next.error = f.error;
+      }
+      if (ev.type === "url_metadata") {
+        const m = e as UrlMetadataEvent;
+        if (m.title !== undefined) next.title = m.title ?? null;
+        if (m.uploader !== undefined) next.uploader = m.uploader ?? null;
       }
       return next;
     });

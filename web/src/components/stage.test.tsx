@@ -18,6 +18,8 @@ function snapshot(overrides: Partial<JobSnapshot["urls"][0]> = {}): JobSnapshot 
       paths: [],
       error: null,
       thumb_id: "abc123",
+      title: null,
+      uploader: null,
       ...overrides,
     }],
   };
@@ -38,5 +40,18 @@ describe("HeroStage", () => {
     const { container } = renderUI(<HeroStage snapshot={snapshot()} activeCount={1} />);
     expect(container.textContent).toMatch(/3\.4 MB\/s/);
     expect(container.textContent).toMatch(/18s/);
+  });
+
+  it("renders parsed title and uploader when available", () => {
+    const { container } = renderUI(
+      <HeroStage
+        snapshot={snapshot({ title: "Me at the zoo", uploader: "jawed" })}
+        activeCount={1}
+      />
+    );
+    expect(container.textContent).toMatch(/Me at the zoo/);
+    expect(container.textContent).toMatch(/jawed/);
+    // URL should NOT appear as the title now
+    expect(container.textContent).not.toMatch(/https:\/\/a/);
   });
 });

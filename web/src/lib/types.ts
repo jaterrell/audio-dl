@@ -16,6 +16,8 @@ export interface UrlState {
   paths: string[];
   error: string | null;
   thumb_id: string | null;
+  title: string | null;
+  uploader: string | null;
 }
 
 export interface JobSnapshot {

@@ -19,8 +19,8 @@ export function JobTracker({ jobId }: { jobId: string }) {
       if (u.state === "completed") {
         addItem({
           url: u.url,
-          title: null,
-          artist: null,
+          title: u.title,
+          artist: u.uploader,
           media_format: u.media_format,
           paths: u.paths,
           thumb_id: u.thumb_id,

@@ -2295,34 +2295,55 @@ class TestThumbsEndpoint:
 # Task 6 — persist thumbnails on completion; thumb_id in snapshot
 # ---------------------------------------------------------------------------
 
-def _make_fake_download_with_thumb(tmp_path):
-    """A fake download_media that drops a known thumbnail jpeg next to the audio."""
+def _make_fake_download_with_live_thumb():
+    """A fake download_media that simulates yt-dlp's behavior in v2.0.1+:
+    yt-dlp's EmbedThumbnail postprocessor consumes and deletes the sibling
+    jpeg, so the audio file ships without one on disk. The live thumb path
+    (populated by _fetch_thumbnail during the metadata callback) is the
+    only post-postprocessing source. The fake mirrors that: drop a thumb
+    at audio_dl_ui._thumb_dir(job_id)/{url_idx}.jpg, no sibling jpeg.
+    """
     def _fake(url, *, output_dir, media_format, **kwargs):  # pylint: disable=unused-argument
+        import audio_dl_ui as ui  # pylint: disable=import-outside-toplevel
+        for job in ui.JOBS.values():
+            if url in job.url_states:
+                idx = list(job.url_states.keys()).index(url)
+                thumb_path = Path(ui._thumb_dir(job.id)) / f"{idx}.jpg"
+                thumb_path.parent.mkdir(parents=True, exist_ok=True)
+                thumb_path.write_bytes(b"\xff\xd8\xfflive_thumb_bytes")
+                break
         out = Path(output_dir) / "track.m4a"
         out.write_bytes(b"audio")
-        thumb = Path(output_dir) / "track.jpg"
-        thumb.write_bytes(b"\xff\xd8\xfftestjpeg")
         return [str(out)]
     return _fake
 
 
 class TestThumbPersistOnCompletion:
-    def test_completed_url_state_includes_thumb_id(self, tmp_path, monkeypatch):
+    def test_completed_url_state_includes_thumb_id_from_live_thumb_dir(
+        self, tmp_path, monkeypatch
+    ):
         import audio_dl_ui as ui
         from audio_dl_ui import JOBS, _build_snapshot
 
-        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: tmp_path)
-        monkeypatch.setattr(ui, "download_media", _make_fake_download_with_thumb(tmp_path))
+        # Pin both caches under tmp_path so the test doesn't touch the user's
+        # actual ~/Library/Application Support/audio-dl directory.
+        cache_root = tmp_path / "cache"
+        cache_root.mkdir()
+        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: cache_root)
+        monkeypatch.setattr(
+            "audio_dl_ui._thumb_dir",
+            lambda job_id: str(tmp_path / "live" / job_id),
+        )
+        monkeypatch.setattr(ui, "download_media", _make_fake_download_with_live_thumb())
 
         body = _valid_body(
             urls=[{"url": "https://example.test/song", "format": "m4a"}],
-            output_dir=str(tmp_path),
+            output_dir=str(tmp_path / "out"),
         )
         r = client.post("/jobs", json=body, headers=_csrf_headers())
         assert r.status_code == 200
         job_id = r.json()["job_id"]
 
-        # Poll until the job reaches a terminal state.
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
             if JOBS[job_id].completed:
@@ -2335,3 +2356,45 @@ class TestThumbPersistOnCompletion:
         url_state = snap["urls"][0]
         assert url_state["thumb_id"], "thumb_id must be non-empty after completion"
         assert len(url_state["thumb_id"]) == 40, "thumb_id must be a SHA-1 hex string"
+
+    def test_thumb_id_stays_null_when_no_live_thumb_available(
+        self, tmp_path, monkeypatch
+    ):
+        """If the live thumb fetch never produced a file (no thumbnail in
+        info dict, or fetch failed), the download still succeeds — thumb_id
+        is just null. Verifies graceful degradation, not a hard requirement."""
+        import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, _build_snapshot
+
+        cache_root = tmp_path / "cache"
+        cache_root.mkdir()
+        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: cache_root)
+        monkeypatch.setattr(
+            "audio_dl_ui._thumb_dir",
+            lambda job_id: str(tmp_path / "live" / job_id),
+        )
+
+        def _fake_no_thumb(url, *, output_dir, media_format, **kwargs):  # pylint: disable=unused-argument
+            out = Path(output_dir) / "track.m4a"
+            out.write_bytes(b"audio")
+            return [str(out)]
+
+        monkeypatch.setattr(ui, "download_media", _fake_no_thumb)
+
+        body = _valid_body(
+            urls=[{"url": "https://example.test/no-thumb", "format": "m4a"}],
+            output_dir=str(tmp_path / "out"),
+        )
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
+        job_id = r.json()["job_id"]
+
+        deadline = time.monotonic() + 3.0  # +1.5s for the polling window
+        while time.monotonic() < deadline:
+            if JOBS[job_id].completed:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("job did not complete in time")
+
+        snap = _build_snapshot(JOBS[job_id])
+        assert snap["urls"][0]["thumb_id"] is None

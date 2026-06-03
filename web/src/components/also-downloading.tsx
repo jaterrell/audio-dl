@@ -23,7 +23,7 @@ export function AlsoDownloading({ jobs }: AlsoDownloadingProps) {
             >
               <AlbumArt thumbId={u.thumb_id} size={32} />
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium truncate">{u.url}</div>
+                <div className="text-xs font-medium truncate">{u.title ?? u.url}</div>
                 <div className="h-0.5 bg-white/7 rounded-full overflow-hidden mt-1">
                   <div
                     className="h-full rounded-full transition-[width] duration-200"

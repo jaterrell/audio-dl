@@ -11,7 +11,7 @@ function snap(id: string, percent: number): JobSnapshot {
     urls: [{
       url: `https://${id}`, media_format: "m4a", state: "running",
       progress_percent: percent, speed: null, eta: null,
-      paths: [], error: null, thumb_id: null,
+      paths: [], error: null, thumb_id: null, title: null, uploader: null,
     }],
   };
 }

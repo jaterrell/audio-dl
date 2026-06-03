@@ -54,6 +54,8 @@ function makeSnapshotEvent(overrides?: object) {
         paths: [],
         error: null,
         thumb_id: null,
+        title: null,
+        uploader: null,
       },
     ],
     ...overrides,
@@ -237,5 +239,105 @@ describe("useJobEvents", () => {
     const es = MockEventSource.instances[0];
     unmount();
     expect(es.closed).toBe(true);
+  });
+
+  it("closes the EventSource when a job_snapshot reports terminal state", async () => {
+    // Regression test for the v2.0.0 SSE reconnect loop: the backend closes
+    // the stream after a terminal snapshot, EventSource auto-reconnects, and
+    // the hook used to re-process the same terminal snapshot forever.
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+
+    es.emit(
+      makeSnapshotEvent({
+        complete: true,
+        urls: [
+          {
+            url: "https://a",
+            media_format: "mp3",
+            status: "completed",
+            percent: 100,
+            speed: null,
+            eta: null,
+            paths: ["/tmp/a.mp3"],
+            error: null,
+            thumb_id: null,
+            title: null,
+            uploader: null,
+          },
+        ],
+      })
+    );
+
+    await waitFor(() => expect(es.closed).toBe(true));
+  });
+
+  it("merges url_metadata title and uploader into the existing snapshot", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+
+    es.emit(makeSnapshotEvent());
+    await waitFor(() =>
+      expect(client.getQueryData<JobSnapshot>(["job", "job-1"])).toBeDefined()
+    );
+
+    es.emit({
+      type: "url_metadata",
+      job_id: "job-1",
+      url: "https://a",
+      title: "Me at the zoo",
+      uploader: "jawed",
+      duration: 19,
+      thumbnail_ready: false,
+    });
+
+    await waitFor(() => {
+      const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+      expect(snap.urls[0].title).toBe("Me at the zoo");
+    });
+    const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+    expect(snap.urls[0].uploader).toBe("jawed");
+    // Other URL fields unchanged
+    expect(snap.urls[0].progress_percent).toBe(42);
+    expect(snap.urls[0].state).toBe("running");
+  });
+
+  it("normalizes title and uploader from a job_snapshot event", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+
+    es.emit(
+      makeSnapshotEvent({
+        urls: [
+          {
+            url: "https://a",
+            media_format: "mp3",
+            status: "running",
+            percent: 42,
+            speed: null,
+            eta: null,
+            paths: [],
+            error: null,
+            thumb_id: null,
+            title: "Track Title",
+            uploader: "Artist Name",
+          },
+        ],
+      })
+    );
+
+    await waitFor(() =>
+      expect(client.getQueryData<JobSnapshot>(["job", "job-1"])?.urls[0].title).toBe(
+        "Track Title"
+      )
+    );
+    const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+    expect(snap.urls[0].uploader).toBe("Artist Name");
   });
 });

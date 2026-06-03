@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.0.1 — Live-test fixes
+
+Three bugs found while smoke-testing v2.0.0 against the real backend. None of them showed up in the unit tests because the tests mocked exactly the wire shapes the unit tests asserted on, not what the backend actually emits.
+
+- **Thumbnails now persist and render in the Library.** v2.0.0's `_run_one` looked for a sibling `.jpg` next to the downloaded audio. yt-dlp's `EmbedThumbnail` postprocessor (which runs for every audio format) embeds the thumbnail *into* the audio file and deletes the sidecar, so the sibling never existed. v2.0.1 reads from the live `_thumb_dir(job_id)/{url_idx}.jpg` path (populated by `_fetch_thumbnail` during the metadata callback) with a short polling window for fast downloads where the background fetch may not have finished. The `url_completed` event payload now includes `thumb_id` so the frontend can update history items that received their initial `job_snapshot` before persistence completed.
+- **Titles and artists show up.** v2.0.0's frontend `UrlState` type didn't model `title` or `uploader`, so the backend's parsed values were dropped on the floor. `JobTracker` hard-coded `title: null, artist: null` into history items. v2.0.1 plumbs `title` and `uploader` through the `useJobEvents` snapshot normalization and `url_metadata` event handler, and `HeroStage`, `Queue`, `AlsoDownloading`, and `EmptyStage` all fall back to the URL only when the parsed title is missing.
+- **SSE no longer reconnects in a loop on terminal jobs.** v2.0.0's `useJobEvents` left the raw `EventSource` running after the backend closed the stream. Browser default behavior is to auto-reconnect; the backend replied with the same terminal snapshot every time, churning at ~5 reqs/sec until navigation. v2.0.1 closes the `EventSource` (both on `onmessage` and `onerror`) once the cached snapshot reports a terminal state.
+
 ## v2.0.0 — Web UI v2 (React rewrite)
 
 The web UI is rebuilt from scratch:

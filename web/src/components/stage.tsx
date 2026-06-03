@@ -15,8 +15,8 @@ export function HeroStage({ snapshot, activeCount }: HeroStageProps) {
 
   const u = snapshot.urls[0];
   if (!u) return null;
-  const title = u.url;
-  const artist = "";
+  const title = u.title ?? u.url;
+  const artist = u.uploader ?? "";
 
   return (
     <div className="grid place-items-center px-8 pt-7 pb-4">

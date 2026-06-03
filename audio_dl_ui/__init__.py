@@ -551,19 +551,31 @@ def _run_one(job: JobState, raw_url: str) -> None:
     url_state.phase = "complete"
     url_state.paths = paths
 
-    # v2.0 Task 6: persist a sibling JPEG (dropped by yt-dlp's EmbedThumbnail
-    # postprocessor) into the stable on-disk thumb cache so the Library view
-    # can serve it via /thumbs/{thumb_id}.jpg long after the job expires.
-    audio_path = Path(paths[0])
-    sibling_thumb = audio_path.with_suffix(".jpg")
-    if sibling_thumb.exists():
+    # Persist the live thumbnail (fetched in the metadata callback by
+    # _fetch_thumbnail) into the stable on-disk thumb cache so the Library
+    # view can serve it via /thumbs/{thumb_id}.jpg long after the job
+    # expires. Earlier v2.0 code looked for a sibling .jpg next to the audio
+    # file; that only existed if yt-dlp didn't run EmbedThumbnail, which
+    # we do for every audio format. The live thumb path is the only
+    # reliable source post-postprocessing.
+    idx = _url_idx(job, raw_url)
+    live_thumb = Path(_thumb_dir(job.id)) / f"{idx}.jpg"
+    # The background fetcher runs in a daemon thread; on fast downloads it
+    # may not have finished by the time we get here. Briefly wait — the
+    # fetch itself has a 5s timeout, so up to ~1.5s of polling is safe.
+    for _ in range(15):
+        if live_thumb.exists():
+            break
+        time.sleep(0.1)
+    if live_thumb.exists():
         try:
-            url_state.thumb_id = _persist_thumb(raw_url, sibling_thumb.read_bytes())
+            url_state.thumb_id = _persist_thumb(raw_url, live_thumb.read_bytes())
         except OSError:
             pass  # Persisting a thumbnail must never break the job.
 
     _emit(job, {"type": "url_completed", "job_id": job.id,
-                "url": raw_url, "paths": paths})
+                "url": raw_url, "paths": paths,
+                "thumb_id": url_state.thumb_id})
 
 
 def _supervise(job: JobState, futures: list) -> None:

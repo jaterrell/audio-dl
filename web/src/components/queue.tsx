@@ -24,7 +24,10 @@ export function Queue({ jobs }: QueueProps) {
           >
             <AlbumArt thumbId={u.thumb_id} size={40} />
             <div className="min-w-0">
-              <div className="text-sm font-medium truncate">{u.url}</div>
+              <div className="text-sm font-medium truncate">{u.title ?? u.url}</div>
+              {u.uploader && (
+                <div className="text-xs text-[var(--text-3)] truncate">{u.uploader}</div>
+              )}
             </div>
             <span className="text-xs text-[var(--text-2)] bg-[var(--surface)] px-2 py-0.5 rounded-full font-medium">
               {u.media_format}
