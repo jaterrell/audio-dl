@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-dl"
-version = "1.9.1"
+version = "1.9.2"
 description = "Download high-quality audio from YouTube, SoundCloud, and any other site yt-dlp supports."
 readme = "README.md"
 license = { file = "LICENSE" }

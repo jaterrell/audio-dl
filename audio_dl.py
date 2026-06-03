@@ -28,7 +28,7 @@ Requirements:
 """
 from __future__ import annotations
 
-__version__ = "1.9.1"
+__version__ = "1.9.2"
 
 import argparse
 from collections.abc import Callable
@@ -194,13 +194,29 @@ def check_dependencies() -> None:
 def _collect_final_paths(info: dict) -> list[str]:
     """
     Pull the final post-processed filepaths out of a yt-dlp info dict.
-    Handles both single-video and playlist shapes.
+    Walks ``entries`` recursively so nested playlists (channel pages,
+    SoundCloud user pages, ``_type: "multi_video"``) are covered. Order
+    follows yt-dlp's natural playlist order — ``paths[0]`` is the first
+    track, which the UI uses for "reveal in Finder" actions.
     """
-    requested = list(info.get("requested_downloads") or [])
-    for entry in info.get("entries") or []:
-        if isinstance(entry, dict):
-            requested.extend(entry.get("requested_downloads") or [])
-    return [r["filepath"] for r in requested if r.get("filepath")]
+    paths: list[str] = []
+    seen: set[int] = set()
+
+    def walk(node: dict) -> None:
+        node_id = id(node)
+        if node_id in seen:
+            return
+        seen.add(node_id)
+        for r in node.get("requested_downloads") or []:
+            fp = r.get("filepath") if isinstance(r, dict) else None
+            if fp:
+                paths.append(fp)
+        for entry in node.get("entries") or []:
+            if isinstance(entry, dict):
+                walk(entry)
+
+    walk(info)
+    return paths
 
 
 AUDIO_FORMATS = ("mp3", "m4a", "flac", "alac", "opus", "wav")

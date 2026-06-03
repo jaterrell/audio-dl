@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.9.2 — nested-playlist output paths
+
+**Fix:** `_collect_final_paths` now walks `entries` recursively so
+channel pages, SoundCloud user URLs, and other playlist-of-playlists
+shapes return their downloaded files instead of triggering the spurious
+"Download succeeded but yt-dlp reported no output path" warning. The
+previous shallow scan only looked one level deep, missing leaves that
+yt-dlp produces 2+ levels in for `_type: "playlist"` /
+`_type: "multi_video"` sub-resolutions. Includes a defensive
+`id()`-based visited set to guard against self-referential entries.
+
 ## v1.9.1 — Codex review follow-ups
 
 Two small correctness fixes from Codex's review of v1.9.0:

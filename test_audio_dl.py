@@ -1,5 +1,5 @@
 # pylint: disable=missing-function-docstring,missing-class-docstring,too-few-public-methods
-# pylint: disable=import-outside-toplevel,protected-access
+# pylint: disable=import-outside-toplevel,protected-access,too-many-lines
 """Tests for audio_dl.py — sanitize_url, detect_platform, _build_ydl_opts,
 _check_dependencies."""
 import os
@@ -15,6 +15,7 @@ from audio_dl import (
     VIDEO_FORMATS,
     _build_ydl_opts,
     _check_dependencies,
+    _collect_final_paths,
     _find_ffmpeg,
     check_dependencies,
     detect_platform,
@@ -239,6 +240,60 @@ class TestFormatConstants:
 
     def test_all_formats_is_union(self):
         assert set(ALL_FORMATS) == set(AUDIO_FORMATS) | set(VIDEO_FORMATS)
+
+
+# ---------------------------------------------------------------------------
+# _collect_final_paths
+# ---------------------------------------------------------------------------
+
+def _rd(path):
+    return {"requested_downloads": [{"filepath": path}]}
+
+
+class TestCollectFinalPaths:
+    def test_single_video_info_dict(self):
+        assert _collect_final_paths(_rd("/out/track.mp3")) == ["/out/track.mp3"]
+
+    def test_flat_playlist_entries_preserve_order(self):
+        # paths[0] drives the UI's reveal-in-Finder action, so the order
+        # yt-dlp returned must round-trip.
+        info = {"_type": "playlist", "entries": [_rd("/out/a.mp3"), _rd("/out/b.mp3")]}
+        assert _collect_final_paths(info) == ["/out/a.mp3", "/out/b.mp3"]
+
+    def test_nested_playlist_entries_preserve_order(self):
+        # Channel / user pages return playlists-of-playlists; yt-dlp stores
+        # the resolved sub-playlist dict back in the parent's ``entries``,
+        # so leaves with ``requested_downloads`` sit 2+ levels deep.
+        info = {
+            "_type": "playlist",
+            "entries": [
+                {"_type": "playlist", "entries": [_rd("/out/a.mp3"), _rd("/out/b.mp3")]},
+                {"_type": "multi_video", "entries": [_rd("/out/c.mp3")]},
+            ],
+        }
+        assert _collect_final_paths(info) == ["/out/a.mp3", "/out/b.mp3", "/out/c.mp3"]
+
+    def test_entries_with_none_and_non_dict_are_skipped(self):
+        info = {"entries": [None, "not-a-dict", _rd("/out/keep.mp3")]}
+        assert _collect_final_paths(info) == ["/out/keep.mp3"]
+
+    def test_requested_downloads_without_filepath_dropped(self):
+        info = {
+            "requested_downloads": [
+                {"_filename": "/tmp/pre.webm"},
+                {"filepath": "/out/done.mp3"},
+                {"filepath": ""},
+            ],
+        }
+        assert _collect_final_paths(info) == ["/out/done.mp3"]
+
+    def test_empty_info_returns_empty_list(self):
+        assert not _collect_final_paths({})
+
+    def test_self_referential_entries_terminate(self):
+        info: dict = _rd("/out/a.mp3")
+        info["entries"] = [info]
+        assert _collect_final_paths(info) == ["/out/a.mp3"]
 
 
 class TestBuildYdlOptsAudio:
