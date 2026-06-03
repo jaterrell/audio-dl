@@ -25,3 +25,8 @@ dist/
 .context/
 .superpowers/
 .claude/worktrees/
+
+web/node_modules/
+web/dist/
+audio_dl_ui/static/*
+!audio_dl_ui/static/.gitkeep

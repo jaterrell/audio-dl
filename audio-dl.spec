@@ -58,6 +58,7 @@ binaries = [(_FFMPEG_BIN, "imageio_ffmpeg/binaries")]
 datas = (
     collect_data_files("uvicorn")
     + collect_data_files("fastapi")
+    + [("audio_dl_ui/static", "audio_dl_ui/static")]
 )
 
 block_cipher = None

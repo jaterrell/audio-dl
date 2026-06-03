@@ -52,30 +52,34 @@ python audio_dl.py <url> --fragments 8                    # 8 parallel fragments
 
 `--format` is the single switch for output type. Audio formats (`mp3`, `m4a`, `flac`, `alac`, `opus`, `wav`) extract the audio stream; video formats (`mp4`) merge bestvideo+bestaudio into a single file. Default is mp3 @ 320 kbps. If installed via `pipx install .`, use `audio-dl` in place of `python audio_dl.py`.
 
-## Web UI (optional)
+## Web UI (v2)
 
-Prefer a browser to a terminal? Install the UI extra and run the launcher:
+The web UI is a React app built with Vite, served by FastAPI's `StaticFiles`.
 
-```bash
-pipx install 'audio-dl[ui]'   # or: pip install '.[ui]'
-audio-dl-ui                   # opens http://127.0.0.1:8000 in your browser
-```
+### Development
 
-Paste URLs, pick a format, click Download. Each URL becomes a card
-showing its thumbnail, title, uploader, duration, live speed/ETA/bytes,
-and the last few lines of yt-dlp output. 10 themes (toggle in the
-header), parallel jobs slider (1–8), whole-job Cancel, click to reveal
-saved files in Finder.
+In one terminal, run the backend in dev mode:
 
 ```bash
-audio-dl-ui --port 9000              # custom port
-audio-dl-ui --output-dir ~/Music     # change the default output dir shown
-audio-dl-ui --no-browser             # don't auto-open the browser
+AUDIO_DL_DEV=1 audio-dl-ui --port 9000 --no-browser
 ```
 
-Bind defaults to `127.0.0.1` — no network exposure. Credentials for gated
-content (cookies, SoundCloud OAuth) aren't surfaced in the UI; use the CLI
-for those.
+In another:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open http://localhost:5173. The Vite proxy forwards `/api`, `/jobs`, `/thumbs`, `/reveal` to the backend.
+
+### Production
+
+```bash
+./scripts/build-web.sh   # produces audio_dl_ui/static/
+audio-dl-ui              # serves the built bundle
+```
 
 ## macOS `.app` bundle
 

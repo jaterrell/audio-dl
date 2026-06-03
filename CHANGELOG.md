@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.0.0 — Web UI v2 (React rewrite)
+
+The web UI is rebuilt from scratch:
+
+- **New aesthetic:** "Now Playing" single-focus design. Album art glows on a stage at the center; ambient color is extracted from that art using node-vibrant. The console / TUI look is gone.
+- **New stack:** Vite + React 19 + TypeScript + TanStack Router + TanStack Query + Tailwind v4 + shadcn/ui (Radix primitives) + Lucide + Biome. The 3700-line inline `_INDEX_TEMPLATE` is replaced by a Vite-built bundle served via FastAPI `StaticFiles`.
+- **New screens:** `/` (Now — active downloads, queue, URL input) and `/library` (full history with search + format filter, day-grouped tile grid).
+- **No more themes.** The ten console themes from v1.5-1.7 are removed.
+- **No cmd-K.** The keyboard palette is gone; every action is reachable through visible UI.
+- **No more per-URL row builder.** Paste one URL at a time, or multi-line paste auto-queues each line at the current default format.
+- **Adaptive accent color.** Each new hero album art re-tints the page's accent gradient.
+- **Thumbnail cache.** Completed downloads' thumbnails are persisted on-disk under `~/Library/Application Support/audio-dl/thumbs/` and served by stable SHA-1 URLs via `GET /thumbs/{thumb_id}.jpg` — so the Library view always has art available.
+- **Server additions:** `/api/version`, `/api/settings/defaults`, `/api/csrf` (dev-only), `/thumbs/{thumb_id}.jpg`. `POST /jobs` returns `thumb_id` per URL.
+- **Backwards compatibility:** v1 history in localStorage carries forward as-is; old entries render with fallback gradients (no `thumb_id`). CLI is unchanged.
+
+The `.app` build pipeline now runs `npm ci && npm run build` before PyInstaller. CI builds the bundle and runs the frontend test suite alongside pytest.
+
 ## v1.9.2 — nested-playlist output paths
 
 **Fix:** `_collect_final_paths` now walks `entries` recursively so

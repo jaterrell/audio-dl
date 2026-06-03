@@ -6,7 +6,6 @@ import collections
 import json
 import os
 import queue
-import re
 import threading
 import time
 from pathlib import Path
@@ -16,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from audio_dl import __version__
 from audio_dl_ui import (
     app,
     JOBS,
@@ -24,6 +24,7 @@ from audio_dl_ui import (
     UrlState,
     _make_url_logger,
     JobState,
+    _refresh_dev_mode,
 )
 
 # Set a known CSRF token at module load so all tests share the same value.
@@ -39,6 +40,8 @@ def _reset_csrf_token():
     _csrf_headers() would get 403.
     """
     app.state.csrf_token = "test-token"
+    app.state.default_output_dir = os.path.expanduser("~/Downloads/audio-dl")
+    app.state.max_parallel = 4
 
 
 client = TestClient(app)
@@ -53,16 +56,22 @@ def _csrf_query():
 
 
 # ---------------------------------------------------------------------------
-# GET /
+# GET / and SPA routing — StaticFiles mount
 # ---------------------------------------------------------------------------
 
-class TestIndex:
-    def test_returns_html(self):
+
+class TestStaticFilesMount:
+    def test_root_serves_index_html(self):
         r = client.get("/")
         assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
-        assert "audio-dl" in r.text
-        assert "${url}" not in r.text
+        assert r.headers["content-type"].startswith("text/html")
+        assert b"<title>audio-dl</title>" in r.content
+
+    def test_unknown_path_serves_index_html(self):
+        # spa_fallback catch-all serves index.html for client-side routing.
+        r = client.get("/library")
+        assert r.status_code == 200
+        assert b"<title>audio-dl</title>" in r.content
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +181,27 @@ class TestPostJobsValidation:
                         headers=_csrf_headers())
         assert r.status_code == 400
         assert "writable" in r.json()["detail"].lower()
+
+    def test_output_dir_omitted_uses_launch_default(self, tmp_path, monkeypatch):
+        """POST /jobs without output_dir falls back to app.state.default_output_dir."""
+        import audio_dl_ui as _ui
+        original = getattr(_ui.app.state, "default_output_dir", None)
+        _ui.app.state.default_output_dir = str(tmp_path)
+        try:
+            body = _valid_body()
+            del body["output_dir"]
+            with patch("audio_dl_ui._run_one"):
+                r = client.post("/jobs", json=body, headers=_csrf_headers())
+            assert r.status_code == 200, r.text
+            job_id = r.json()["job_id"]
+            from audio_dl_ui import JOBS
+            assert JOBS[job_id].output_dir == str(tmp_path)
+        finally:
+            if original is None:
+                if hasattr(_ui.app.state, "default_output_dir"):
+                    delattr(_ui.app.state, "default_output_dir")
+            else:
+                _ui.app.state.default_output_dir = original
 
 
 # ---------------------------------------------------------------------------
@@ -993,29 +1023,6 @@ class TestQueueBound:
 # P3 trio: HTML escape, btoa Unicode, 0.0.0.0 browser rewrite
 # ---------------------------------------------------------------------------
 
-class TestDefaultOutputDirEscaped:
-    """default_output_dir is templated into an HTML attribute. Crafted
-    values like '"><script>alert(1)</script>' must be escaped."""
-
-    def test_html_escape(self):
-        from audio_dl_ui import app as _app
-        original = getattr(_app.state, "default_output_dir", None)
-        try:
-            _app.state.default_output_dir = '"><script>alert(1)</script>'
-            r = client.get("/")
-            assert r.status_code == 200
-            body = r.text
-            assert "<script>alert(1)</script>" not in body
-            # html.escape with quote=True produces &lt;script&gt; and &quot;
-            assert "&lt;script&gt;" in body or "&amp;lt;script&amp;gt;" in body
-        finally:
-            if original is None:
-                if hasattr(_app.state, "default_output_dir"):
-                    delattr(_app.state, "default_output_dir")
-            else:
-                _app.state.default_output_dir = original
-
-
 
 class TestBrowserHostRewrite:
     """When --host is a bind-all address (0.0.0.0 or ::), the auto-opened
@@ -1044,7 +1051,8 @@ class TestBrowserHostRewrite:
             ["audio-dl-ui", "--host", "0.0.0.0", "--allow-remote", "--port", "8765"],
         )
         ui.main()
-        assert called == ["http://127.0.0.1:8765"], called
+        assert len(called) == 1
+        assert called[0].startswith("http://127.0.0.1:8765/?token="), called
 
     def test_loopback_passes_through(self, monkeypatch):
         import audio_dl_ui as ui
@@ -1066,7 +1074,8 @@ class TestBrowserHostRewrite:
         monkeypatch.setattr(sys, "argv",
                             ["audio-dl-ui", "--host", "127.0.0.1", "--port", "9000"])
         ui.main()
-        assert called == ["http://127.0.0.1:9000"], called
+        assert len(called) == 1
+        assert called[0].startswith("http://127.0.0.1:9000/?token="), called
 
 
 # ---------------------------------------------------------------------------
@@ -1249,241 +1258,6 @@ class TestShowMacosDialog:
             raise ui.subprocess.TimeoutExpired(cmd="osascript", timeout=60)
         monkeypatch.setattr(ui.subprocess, "run", raise_timeout)
         assert ui._show_macos_dialog("t", "m") is False
-
-
-# ---------------------------------------------------------------------------
-# v1.5 theme system — CSS cascade + JS registry tests
-# ---------------------------------------------------------------------------
-
-class TestThemeRendering:
-    """Theme cascade is 10 :root[data-theme="<slug>"] blocks. The JS THEMES
-    registry must enumerate the same 10 slugs in the same order. Drift between
-    the two would silently break the picker."""
-
-    EXPECTED_SLUGS = [
-        "phosphor", "rose", "moon", "dawn", "amber",
-        "solarized", "gruvbox", "tokyo", "atom", "claude",
-    ]
-
-    def test_all_ten_theme_blocks_present(self):
-        """_INDEX_CSS_THEMES contains :root[data-theme="<slug>"] selectors for all
-        10 themes, in the same order as the JS THEMES registry. Each slug may appear
-        multiple times (once for the var block, additional times for scoped descendant
-        override rules) — we check the first-occurrence order only."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        found = re.findall(r':root\[data-theme="([^"]+)"\]', _INDEX_CSS_THEMES)
-        # Deduplicate while preserving first-occurrence order (dict insertion order).
-        unique_ordered = list(dict.fromkeys(found))
-        assert unique_ordered == self.EXPECTED_SLUGS, (
-            f"Expected {self.EXPECTED_SLUGS}, found unique-ordered {unique_ordered}"
-        )
-
-    def test_js_themes_registry_matches_css_slugs(self):
-        """JS THEMES array's slugs appear in the same order as the CSS blocks."""
-        from audio_dl_ui import _INDEX_JS
-        slugs = re.findall(r"slug:\s*'([^']+)'", _INDEX_JS)
-        assert slugs == self.EXPECTED_SLUGS, (
-            f"JS slugs {slugs} drift from CSS slugs {self.EXPECTED_SLUGS}"
-        )
-
-    def test_js_default_theme_is_phosphor(self):
-        """Exactly one theme entry has default: true, and it's phosphor."""
-        from audio_dl_ui import _INDEX_JS
-        # Match a registry entry where default: true follows the slug.
-        # Allow any chars except 'slug:' between slug and default within the entry.
-        defaults = re.findall(
-            r"slug:\s*'([^']+)'[^}]*default:\s*true",
-            _INDEX_JS,
-        )
-        assert defaults == ['phosphor'], (
-            f"Expected exactly ['phosphor'] as default, got {defaults}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Per-theme card structural variations (v1.7)
-# ---------------------------------------------------------------------------
-
-class TestCardClusterOverrides:
-    """v1.7 extends the v1.6 per-theme override pattern to .card selectors.
-    Cluster CSS lives at the tail of _INDEX_CSS_THEMES as grouped selectors
-    per cluster. Phosphor stays byte-identical to v1.6 (no .card override)."""
-
-    def test_phosphor_has_no_card_override(self):
-        """Phosphor cards stay byte-identical to v1.6 — there is no
-        `[data-theme="phosphor"] .card` rule anywhere."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        assert re.search(
-            r'\[data-theme="phosphor"\]\s*\.card', _INDEX_CSS_THEMES
-        ) is None, "Phosphor must remain the v1.6 reference (no .card override)"
-
-    def test_vintage_cluster_card_block_present(self):
-        """Vintage cluster (amber/solarized/gruvbox) has a grouped .card
-        selector — exactly three themes grouped together."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        pattern = (
-            r'\[data-theme="amber"\]\s*\.card,\s*'
-            r'\[data-theme="solarized"\]\s*\.card,\s*'
-            r'\[data-theme="gruvbox"\]\s*\.card'
-        )
-        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
-            "Vintage cluster grouped .card selector missing"
-        )
-
-    def test_editorial_cluster_card_block_present(self):
-        """Editorial cluster (rose/moon/dawn) has a grouped .card selector."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        pattern = (
-            r'\[data-theme="rose"\]\s*\.card,\s*'
-            r'\[data-theme="moon"\]\s*\.card,\s*'
-            r'\[data-theme="dawn"\]\s*\.card'
-        )
-        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
-            "Editorial cluster grouped .card selector missing"
-        )
-
-    def test_dawn_card_thumb_hidden(self):
-        """Dawn (editorial light) hides .card-thumb entirely."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        pattern = (
-            r'\[data-theme="dawn"\]\s*\.card-thumb\s*\{[^}]*display:\s*none'
-        )
-        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
-            "Dawn must hide .card-thumb (display: none)"
-        )
-
-    def test_dawn_card_grid_collapses_to_single_column(self):
-        """When the thumb is hidden, the card grid must collapse to 1fr
-        to avoid a phantom thumbnail column."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        pattern = (
-            r'\[data-theme="dawn"\]\s*\.card\s*\{[^}]*grid-template-columns:\s*1fr'
-        )
-        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
-            "Dawn .card must override grid-template-columns to 1fr"
-        )
-
-    def test_modern_cluster_card_block_present(self):
-        """Modern cluster (tokyo/atom/claude) has a grouped .card selector."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        pattern = (
-            r'\[data-theme="tokyo"\]\s*\.card,\s*'
-            r'\[data-theme="atom"\]\s*\.card,\s*'
-            r'\[data-theme="claude"\]\s*\.card'
-        )
-        assert re.search(pattern, _INDEX_CSS_THEMES) is not None, (
-            "Modern cluster grouped .card selector missing"
-        )
-
-    def test_modern_cluster_has_duration_overlay(self):
-        """Modern cluster renders duration via .card-thumb::after with
-        attr(data-duration). Look for the ::after rule on at least one of
-        the three modern themes — the spec uses a grouped selector covering
-        all three, but a per-theme split is also acceptable."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        pattern = r'\[data-theme="(?:tokyo|atom|claude)"\]\s*\.card-thumb::after'
-        matches = re.findall(pattern, _INDEX_CSS_THEMES)
-        assert len(matches) >= 3, (
-            f"Expected modern cluster .card-thumb::after on tokyo, atom, claude — "
-            f"found {len(matches)} match(es): {matches}"
-        )
-        # Verify attr(data-duration) is the content
-        assert re.search(
-            r'\.card-thumb::after[^}]*content:\s*attr\(data-duration\)',
-            _INDEX_CSS_THEMES,
-        ) is not None, "::after rule should use content: attr(data-duration)"
-
-    def test_modern_cluster_meta_above_title_via_grid(self):
-        """Modern cluster lifts .card-meta above .card-title by switching
-        .card-head from flex to CSS grid and placing meta on row 1, title
-        on row 2. An earlier attempt used `order: -1` on .card-meta alone;
-        that does NOT work because the base .card-head is a single-row
-        display:flex container — `order` only reshuffles inline, it does
-        not promote a child to its own row. Grid placement does. (P2
-        codex review finding on PR #19.)"""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        # .card-head switches to display: grid for all 3 modern themes
-        assert re.search(
-            r'\[data-theme="tokyo"\]\s*\.card-head,\s*'
-            r'\[data-theme="atom"\]\s*\.card-head,\s*'
-            r'\[data-theme="claude"\]\s*\.card-head\s*\{[^}]*display:\s*grid',
-            _INDEX_CSS_THEMES,
-        ) is not None, "Modern cluster .card-head must use display: grid"
-        # .card-meta placed on grid-row: 1 (top)
-        assert re.search(
-            r'\[data-theme="tokyo"\]\s*\.card-meta,\s*'
-            r'\[data-theme="atom"\]\s*\.card-meta,\s*'
-            r'\[data-theme="claude"\]\s*\.card-meta\s*\{[^}]*grid-row:\s*1',
-            _INDEX_CSS_THEMES,
-        ) is not None, "Modern cluster .card-meta must be placed on grid-row: 1"
-        # .card-title placed on grid-row: 2 (below meta)
-        assert re.search(
-            r'\[data-theme="tokyo"\]\s*\.card-title,\s*'
-            r'\[data-theme="atom"\]\s*\.card-title,\s*'
-            r'\[data-theme="claude"\]\s*\.card-title\s*\{[^}]*grid-row:\s*2',
-            _INDEX_CSS_THEMES,
-        ) is not None, "Modern cluster .card-title must be placed on grid-row: 2"
-
-    def test_render_card_sets_data_duration_attribute(self):
-        """renderCard must set data-duration on .card-thumb so the modern
-        cluster's ::after overlay can read it via attr(). Accept either
-        single- or double-quoted attribute name."""
-        from audio_dl_ui import _INDEX_JS
-        assert (
-            "setAttribute('data-duration'" in _INDEX_JS
-            or 'setAttribute("data-duration"' in _INDEX_JS
-        ), "renderCard must call setAttribute('data-duration', ...) on .card-thumb"
-
-    def test_cluster_css_does_not_touch_state_managed_display(self):
-        """Cluster CSS must not assign `display:` on .card-progress or
-        .card-log children — those rules are owned by base state CSS:
-            .card[data-state="queued"] .card-progress { display: none; }
-            .card[data-state="resolving"] .card-log    { display: none; }
-        Overriding at the cluster level would break the show/hide invariant
-        for the queued/resolving lifecycle phases."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        forbidden = re.findall(
-            r'\[data-theme="[^"]+"\]\s*\.card-(?:progress|log|log-line)\s*'
-            r'\{[^}]*display\s*:',
-            _INDEX_CSS_THEMES,
-        )
-        assert not forbidden, (
-            "Cluster CSS must not set `display` on state-managed card children. "
-            f"Offending rules: {forbidden}"
-        )
-
-    def test_cluster_css_does_not_override_badge_state_colors(self):
-        """Cluster CSS must not assign `color:` on .card-badge — those rules
-        are owned by base state CSS for the complete (--ok) and failed
-        (--err) states. Override at the cluster level would silently break
-        success/failure signaling."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        forbidden = re.findall(
-            r'\[data-theme="[^"]+"\]\s*\.card-badge\s*\{[^}]*color\s*:',
-            _INDEX_CSS_THEMES,
-        )
-        assert not forbidden, (
-            "Cluster CSS must not set `color` on .card-badge. "
-            f"Offending rules: {forbidden}"
-        )
-
-    def test_cluster_css_does_not_override_badge_animation(self):
-        """Cluster CSS must not assign animation properties on .card-badge or
-        .card-badge::after — the resolving phase pulse animation is owned by
-        base CSS. Override at the cluster level would silently disable or
-        replace the active-card pulse."""
-        from audio_dl_ui import _INDEX_CSS_THEMES
-        forbidden = re.findall(
-            r'\[data-theme="[^"]+"\]\s*\.card-badge(?:::after)?\s*'
-            r'\{[^}]*animation(?:-name|-duration|-timing-function|-delay'
-            r'|-iteration-count|-direction|-fill-mode|-play-state)?\s*:',
-            _INDEX_CSS_THEMES,
-        )
-        assert not forbidden, (
-            "Cluster CSS must not set animation on .card-badge / ::after. "
-            f"Offending rules: {forbidden}"
-        )
-
 
 # ---------------------------------------------------------------------------
 # _should_keep_log — pure filter for yt-dlp log lines
@@ -2223,48 +1997,6 @@ class TestThumbCleanup:
             JOBS.pop(job.id, None)
 
 
-class TestCardCss:
-    def test_card_styles_present_in_rendered_html(self):
-        r = client.get("/")
-        assert r.status_code == 200
-        # Sanity-check the new card style block is in the served HTML
-        assert ".card {" in r.text
-        assert ".card-thumb" in r.text
-        assert ".card-progress" in r.text
-        assert ".card-log" in r.text
-        assert '[data-state="downloading"]' in r.text or '.card[data-state=' in r.text
-
-
-class TestCardTemplate:
-    def test_card_template_in_rendered_html(self):
-        r = client.get("/")
-        assert r.status_code == 200
-        assert '<template id="card-template"' in r.text
-        # Inner card markup elements
-        assert "card-thumb" in r.text
-        assert "card-title" in r.text
-        assert "card-stats" in r.text
-        assert "card-log" in r.text
-
-
-class TestCardJs:
-    def test_js_has_card_render_helpers(self):
-        r = client.get("/")
-        assert r.status_code == 200
-        # Card rendering function names + handlers must be present
-        assert "renderCard" in r.text or "upsertCard" in r.text
-        assert "url_metadata" in r.text
-        assert "url_log" in r.text
-        # The thumbnail URL must include the CSRF token query
-        assert "/thumb/" in r.text
-
-    def test_reveal_button_in_card_template_and_js(self):
-        r = client.get("/")
-        assert r.status_code == 200
-        assert "card-reveal" in r.text
-        assert "/reveal" in r.text  # at least somewhere in JS
-
-
 # ---------------------------------------------------------------------------
 # v1.8 — global executor concurrency cap
 # ---------------------------------------------------------------------------
@@ -2464,3 +2196,142 @@ class TestRevealAllowList:
                     delattr(_app.state, "default_output_dir")
             else:
                 _app.state.default_output_dir = original_default
+
+
+class TestApiVersion:
+    def test_returns_version_and_build(self):
+        r = client.get("/api/version")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["version"] == __version__
+        assert "build" in data
+        assert isinstance(data["build"], str) and data["build"]
+
+
+class TestApiSettingsDefaults:
+    def test_returns_output_dir_max_parallel_and_formats(self):
+        r = client.get("/api/settings/defaults")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["output_dir"]
+        assert isinstance(data["max_parallel"], int) and data["max_parallel"] >= 1
+        assert set(data["available_formats"]) >= {"mp3", "m4a", "flac", "mp4"}
+
+
+class TestApiCsrf:
+    def test_returns_token_in_dev_mode(self, monkeypatch):
+        monkeypatch.setenv("AUDIO_DL_DEV", "1")
+        _refresh_dev_mode()
+        # TestClient injects host="testclient"; widen the loopback set for this test only.
+        monkeypatch.setattr(
+            "audio_dl_ui._LOOPBACK_HOSTS",
+            frozenset(("127.0.0.1", "::1", "localhost", "testclient")),
+        )
+        try:
+            r = client.get("/api/csrf")
+            assert r.status_code == 200
+            assert r.json()["token"]
+        finally:
+            monkeypatch.delenv("AUDIO_DL_DEV")
+            _refresh_dev_mode()
+
+    def test_404_when_not_dev_mode(self):
+        r = client.get("/api/csrf")
+        assert r.status_code == 404
+
+
+class TestThumbCache:
+    def test_compute_thumb_id_stable_for_same_url(self):
+        from audio_dl_ui import _compute_thumb_id
+        a = _compute_thumb_id("https://youtu.be/dQw4w9WgXcQ")
+        b = _compute_thumb_id("https://youtu.be/dQw4w9WgXcQ")
+        assert a == b
+        assert len(a) == 40  # SHA-1 hex
+
+    def test_compute_thumb_id_differs_for_different_urls(self):
+        from audio_dl_ui import _compute_thumb_id
+        assert _compute_thumb_id("https://a") != _compute_thumb_id("https://b")
+
+    def test_persist_thumb_writes_file(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _persist_thumb
+        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: tmp_path)
+        thumb_id = _persist_thumb("https://example.test/track", b"\xff\xd8\xff_jpeg_bytes")
+        out = tmp_path / f"{thumb_id}.jpg"
+        assert out.exists()
+        assert out.read_bytes().startswith(b"\xff\xd8\xff")
+
+    def test_persist_thumb_idempotent(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _persist_thumb
+        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: tmp_path)
+        a = _persist_thumb("https://example.test/x", b"first")
+        b = _persist_thumb("https://example.test/x", b"second")
+        assert a == b
+        # First-write wins: don't overwrite an existing cached thumb.
+        assert (tmp_path / f"{a}.jpg").read_bytes() == b"first"
+
+
+class TestThumbsEndpoint:
+    def test_serves_cached_jpeg(self, tmp_path, monkeypatch):
+        from audio_dl_ui import _persist_thumb
+        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: tmp_path)
+        thumb_id = _persist_thumb("https://example.test/song", b"\xff\xd8\xfftestbytes")
+        r = client.get(f"/thumbs/{thumb_id}.jpg")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/jpeg")
+        assert r.content.startswith(b"\xff\xd8\xff")
+
+    def test_404_for_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: tmp_path)
+        r = client.get("/thumbs/" + ("0" * 40) + ".jpg")
+        assert r.status_code == 404
+
+    def test_rejects_path_traversal(self):
+        # No slashes / dots allowed in thumb_id.
+        r = client.get("/thumbs/..%2Fetc%2Fpasswd.jpg")
+        assert r.status_code in (400, 404)
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — persist thumbnails on completion; thumb_id in snapshot
+# ---------------------------------------------------------------------------
+
+def _make_fake_download_with_thumb(tmp_path):
+    """A fake download_media that drops a known thumbnail jpeg next to the audio."""
+    def _fake(url, *, output_dir, media_format, **kwargs):  # pylint: disable=unused-argument
+        out = Path(output_dir) / "track.m4a"
+        out.write_bytes(b"audio")
+        thumb = Path(output_dir) / "track.jpg"
+        thumb.write_bytes(b"\xff\xd8\xfftestjpeg")
+        return [str(out)]
+    return _fake
+
+
+class TestThumbPersistOnCompletion:
+    def test_completed_url_state_includes_thumb_id(self, tmp_path, monkeypatch):
+        import audio_dl_ui as ui
+        from audio_dl_ui import JOBS, _build_snapshot
+
+        monkeypatch.setattr("audio_dl_ui._thumb_cache_dir", lambda: tmp_path)
+        monkeypatch.setattr(ui, "download_media", _make_fake_download_with_thumb(tmp_path))
+
+        body = _valid_body(
+            urls=[{"url": "https://example.test/song", "format": "m4a"}],
+            output_dir=str(tmp_path),
+        )
+        r = client.post("/jobs", json=body, headers=_csrf_headers())
+        assert r.status_code == 200
+        job_id = r.json()["job_id"]
+
+        # Poll until the job reaches a terminal state.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if JOBS[job_id].completed:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("job did not complete in time")
+
+        snap = _build_snapshot(JOBS[job_id])
+        url_state = snap["urls"][0]
+        assert url_state["thumb_id"], "thumb_id must be non-empty after completion"
+        assert len(url_state["thumb_id"]) == 40, "thumb_id must be a SHA-1 hex string"

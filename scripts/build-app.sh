@@ -18,6 +18,9 @@
 
 set -euo pipefail
 
+# Build the React frontend first so PyInstaller has audio_dl_ui/static/ populated.
+"$(dirname "$0")/build-web.sh"
+
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "ERROR: build-app.sh targets macOS only (this is Phase 3a)." >&2
     exit 1

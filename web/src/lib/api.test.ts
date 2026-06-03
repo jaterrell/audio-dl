@@ -1,0 +1,62 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import { server } from "@/test-utils/server";
+import { http, HttpResponse } from "msw";
+import { getVersion, getDefaults, postJobs, cancelJob, reveal } from "./api";
+import { resetCsrfCache } from "./csrf";
+
+beforeEach(() => {
+  resetCsrfCache();
+  Object.defineProperty(window, "location", {
+    writable: true,
+    value: new URL("http://localhost:5173/?token=test-csrf"),
+  });
+});
+
+describe("api.getVersion", () => {
+  it("returns version info", async () => {
+    const data = await getVersion();
+    expect(data.version).toBe("2.0.0-test");
+  });
+});
+
+describe("api.getDefaults", () => {
+  it("returns launch defaults", async () => {
+    const data = await getDefaults();
+    expect(data.max_parallel).toBe(4);
+    expect(data.available_formats).toContain("mp3");
+  });
+});
+
+describe("api.postJobs", () => {
+  it("posts urls with CSRF header and returns job_id", async () => {
+    server.use(
+      http.post("/jobs", async ({ request }) => {
+        expect(request.headers.get("X-Audio-DL-Token")).toBe("test-csrf");
+        const body = (await request.json()) as { urls: { url: string; format: string }[] };
+        expect(body.urls).toHaveLength(2);
+        return HttpResponse.json({ job_id: "job-1", urls: body.urls });
+      })
+    );
+    const r = await postJobs([
+      { url: "https://a", format: "mp3" },
+      { url: "https://b", format: "m4a" },
+    ]);
+    expect(r.job_id).toBe("job-1");
+  });
+});
+
+describe("api.cancelJob", () => {
+  it("posts cancel with CSRF and parses ok", async () => {
+    server.use(
+      http.post("/jobs/job-1/cancel", () => HttpResponse.json({ cancelled: true }))
+    );
+    await expect(cancelJob("job-1")).resolves.toEqual({ cancelled: true });
+  });
+});
+
+describe("api.reveal", () => {
+  it("posts a path", async () => {
+    server.use(http.post("/reveal", () => HttpResponse.json({ ok: true })));
+    await expect(reveal("/tmp/file.mp3")).resolves.toEqual({ ok: true });
+  });
+});
