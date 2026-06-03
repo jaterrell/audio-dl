@@ -28,6 +28,7 @@ on:
 
 permissions:
   contents: write
+  actions: write  # to dispatch mirror-public.yml after tagging
 
 jobs:
   tag:
@@ -96,3 +97,15 @@ jobs:
             -f ref="refs/tags/v${{ inputs.version }}" \
             -f sha="${{ inputs.sha }}"
           echo "Tagged v${{ inputs.version }} at ${{ inputs.sha }}"
+
+      - name: Dispatch mirror-public.yml
+        # Tags created via the GitHub API with GITHUB_TOKEN do NOT trigger
+        # downstream workflows (GitHub's recursion guard). Without this
+        # explicit dispatch, mirror-public.yml never fires and the public
+        # repo / release page silently miss this tag. workflow_dispatch is
+        # explicit (not a recursive trigger), so it runs normally.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run mirror-public.yml --repo ${{ github.repository }}
+          echo "Dispatched mirror-public.yml to propagate v${{ inputs.version }} to public"
