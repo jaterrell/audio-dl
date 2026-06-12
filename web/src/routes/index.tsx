@@ -24,7 +24,9 @@ function NowScreen() {
 
   return (
     <>
-      {trackedJobs.map((id) => <JobTracker key={id} jobId={id} />)}
+      {trackedJobs.map((id) => (
+        <JobTracker key={id} jobId={id} onJobCreated={(newId) => setTrackedJobs((prev) => [...prev, newId])} />
+      ))}
       {stageJob ? (
         <HeroStage
           snapshot={stageJob}

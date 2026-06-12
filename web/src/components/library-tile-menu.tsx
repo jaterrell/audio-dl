@@ -8,6 +8,7 @@ import {
 } from "./ui/context-menu";
 import { reveal, postJobs } from "@/lib/api";
 import type { HistoryItem } from "@/lib/types";
+import { toast } from "@/lib/toast-store";
 
 interface LibraryTileMenuProps {
   item: HistoryItem;
@@ -17,13 +18,20 @@ interface LibraryTileMenuProps {
 
 export function LibraryTileMenu({ item, onRemove, children }: LibraryTileMenuProps) {
   async function handleReveal() {
-    if (item.paths[0]) {
-      try { await reveal(item.paths[0]); } catch (e) { console.error(e); }
+    if (!item.paths[0]) return;
+    try {
+      await reveal(item.paths[0]);
+    } catch {
+      toast.error("Couldn't reveal file");
     }
   }
   async function handleReDownload() {
-    try { await postJobs([{ url: item.url, format: item.media_format }]); }
-    catch (e) { console.error(e); }
+    try {
+      await postJobs([{ url: item.url, format: item.media_format }]);
+      toast.success("Re-downloading…", { description: item.title ?? item.url });
+    } catch {
+      toast.error("Couldn't start re-download");
+    }
   }
   return (
     <ContextMenu>

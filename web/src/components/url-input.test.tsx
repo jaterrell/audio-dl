@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { server } from "@/test-utils/server";
 import { http, HttpResponse } from "msw";
 import { UrlInput } from "./url-input";
+import { screen } from "@testing-library/react";
+import { resetToastStore } from "@/lib/toast-store";
+import { renderWithToaster } from "@/test-utils/render";
 
 beforeEach(() => localStorage.clear());
 
@@ -55,5 +58,27 @@ describe("UrlInput", () => {
     await user.type(input, "https://x");
     await user.click(getByRole("button", { name: /add/i }));
     expect(input.value).toBe("");
+  });
+});
+
+describe("UrlInput toasts", () => {
+  beforeEach(() => resetToastStore());
+
+  it("shows an error toast when the job request fails", async () => {
+    server.use(http.post("/jobs", () => HttpResponse.json({ detail: "no" }, { status: 500 })));
+    const user = userEvent.setup();
+    renderWithToaster(<UrlInput onJobCreated={() => {}} />);
+    await user.type(screen.getByPlaceholderText(/paste a url/i), "https://x.test/a");
+    await user.click(screen.getByRole("button", { name: /add/i }));
+    expect(await screen.findByText(/couldn't queue/i)).toBeInTheDocument();
+  });
+
+  it("shows a success toast after queueing", async () => {
+    server.use(http.post("/jobs", () => HttpResponse.json({ job_id: "j", urls: [{ url: "https://x.test/a", format: "m4a" }] })));
+    const user = userEvent.setup();
+    renderWithToaster(<UrlInput onJobCreated={() => {}} />);
+    await user.type(screen.getByPlaceholderText(/paste a url/i), "https://x.test/a");
+    await user.click(screen.getByRole("button", { name: /add/i }));
+    expect(await screen.findByText(/queued 1 download/i)).toBeInTheDocument();
   });
 });

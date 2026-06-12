@@ -22,6 +22,12 @@ if (typeof localStorage === "undefined") {
   });
 }
 
+// jsdom doesn't implement the Pointer Capture APIs that Radix Toast's swipe
+// handler calls; stub them so toast interaction tests don't throw uncaught.
+Element.prototype.hasPointerCapture = () => false;
+Element.prototype.setPointerCapture = () => {};
+Element.prototype.releasePointerCapture = () => {};
+
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());

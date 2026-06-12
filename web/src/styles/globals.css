@@ -30,3 +30,25 @@ body,
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "tnum";
 }
+
+/* toast enter/exit — keyed off Radix data-state / data-swipe */
+@keyframes toast-in-x { from { opacity: 0; transform: translateX(12px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes toast-out-x { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(12px); } }
+@keyframes toast-in-y { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes toast-out-y { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(16px); } }
+
+.toast[data-state="open"] { animation: toast-in-x 160ms cubic-bezier(0.16, 1, 0.3, 1); }
+.toast[data-state="closed"] { animation: toast-out-x 120ms ease-in; }
+.toast[data-swipe="move"] { transform: translateX(var(--radix-toast-swipe-move-x)); }
+.toast[data-swipe="cancel"] { transform: translateX(0); transition: transform 160ms ease-out; }
+.toast[data-swipe="end"] { animation: toast-out-x 120ms ease-in; }
+
+@media (max-width: 639px) {
+  .toast[data-state="open"] { animation-name: toast-in-y; }
+  .toast[data-state="closed"], .toast[data-swipe="end"] { animation-name: toast-out-y; }
+  .toast[data-swipe="move"] { transform: translateY(var(--radix-toast-swipe-move-y)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast[data-state], .toast[data-swipe] { animation: none !important; transition: none !important; }
+}

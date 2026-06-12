@@ -9,6 +9,7 @@ import {
   Outlet,
 } from "@tanstack/react-router";
 import type { ReactElement, ReactNode } from "react";
+import { Toaster } from "@/components/toaster";
 
 export function renderUI(ui: ReactElement, options?: RenderOptions) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -21,6 +22,16 @@ export function renderUI(ui: ReactElement, options?: RenderOptions) {
     queryClient,
     ...render(ui, { wrapper: Wrapper, ...options }),
   };
+}
+
+export function renderWithToaster(ui: ReactElement, options?: RenderOptions) {
+  return renderUI(
+    <>
+      {ui}
+      <Toaster />
+    </>,
+    options,
+  );
 }
 
 export function renderWithRouter(ui: ReactElement, options?: { initialPath?: string }) {

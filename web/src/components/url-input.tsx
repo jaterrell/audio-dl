@@ -3,6 +3,7 @@ import { Button } from "./ui/button";
 import { FormatPicker } from "./format-picker";
 import { useSettings } from "@/hooks/use-settings";
 import { postJobs } from "@/lib/api";
+import { toast } from "@/lib/toast-store";
 
 interface UrlInputProps {
   onJobCreated: (jobId: string) => void;
@@ -21,12 +22,19 @@ export function UrlInput({ onJobCreated }: UrlInputProps) {
     if (lines.length === 0) return;
     const urls = lines.map((url) => ({ url, format: settings.default_format }));
     setSubmitting(true);
+    const plural = urls.length === 1 ? "" : "s";
+    const req = postJobs(urls);
+    toast.promise(req, {
+      loading: `Queueing ${urls.length} download${plural}…`,
+      success: (r) => `Queued ${r.urls.length} download${r.urls.length === 1 ? "" : "s"}`,
+      error: "Couldn't queue download",
+    });
     try {
-      const r = await postJobs(urls);
+      const r = await req;
       onJobCreated(r.job_id);
       setValue("");
-    } catch (e) {
-      console.error(e);
+    } catch {
+      /* surfaced by the toast above */
     } finally {
       setSubmitting(false);
     }

@@ -1,4 +1,5 @@
 import { createRootRoute, Outlet, Link } from "@tanstack/react-router";
+import { Toaster } from "@/components/toaster";
 
 export const Route = createRootRoute({
   component: AppShell,
@@ -29,6 +30,7 @@ function AppShell() {
       <main>
         <Outlet />
       </main>
+      <Toaster />
     </div>
   );
 }

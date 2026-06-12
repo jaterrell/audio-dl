@@ -1,4 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { screen } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
+import { server } from "@/test-utils/server";
+import { resetToastStore } from "@/lib/toast-store";
+import { renderWithToaster } from "@/test-utils/render";
 import { renderUI } from "@/test-utils/render";
 import userEvent from "@testing-library/user-event";
 import { LibraryTileMenu } from "./library-tile-menu";
@@ -36,5 +41,35 @@ describe("LibraryTileMenu", () => {
     await user.pointer({ keys: "[MouseRight]", target: getByText("tile") });
     await user.click(await findByText(/dismiss/i));
     expect(onRemove).toHaveBeenCalledWith("https://a");
+  });
+});
+
+describe("LibraryTileMenu toasts", () => {
+  beforeEach(() => resetToastStore());
+
+  it("shows a success toast after starting a re-download", async () => {
+    server.use(http.post("/jobs", () => HttpResponse.json({ job_id: "j", urls: [] })));
+    const user = userEvent.setup();
+    renderWithToaster(
+      <LibraryTileMenu item={item} onRemove={() => {}}>
+        <button>tile</button>
+      </LibraryTileMenu>,
+    );
+    await user.pointer({ keys: "[MouseRight]", target: screen.getByText("tile") });
+    await user.click(await screen.findByText(/re-download/i));
+    expect(await screen.findByText(/re-downloading/i)).toBeInTheDocument();
+  });
+
+  it("shows an error toast when reveal fails", async () => {
+    server.use(http.post("/reveal", () => HttpResponse.json({}, { status: 500 })));
+    const user = userEvent.setup();
+    renderWithToaster(
+      <LibraryTileMenu item={item} onRemove={() => {}}>
+        <button>tile</button>
+      </LibraryTileMenu>,
+    );
+    await user.pointer({ keys: "[MouseRight]", target: screen.getByText("tile") });
+    await user.click(await screen.findByText(/reveal in finder/i));
+    expect(await screen.findByText(/couldn't reveal/i)).toBeInTheDocument();
   });
 });

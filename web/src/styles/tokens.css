@@ -17,4 +17,10 @@
   --radius-lg: 14px;
   --radius-md: 10px;
   --radius-sm: 6px;
+
+  /* semantic status colors — accent is hijacked by useVibrant, so it can't carry meaning */
+  --ok: #34d399;   --ok-bg: rgb(52 211 153 / 0.14);
+  --err: #f87171;  --err-bg: rgb(248 113 113 / 0.14);
+  --warn: #fbbf24; --warn-bg: rgb(251 191 36 / 0.14);
+  --info: #60a5fa; --info-bg: rgb(96 165 250 / 0.14);
 }
