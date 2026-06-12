@@ -30,3 +30,6 @@ web/node_modules/
 web/dist/
 audio_dl_ui/static/*
 !audio_dl_ui/static/.gitkeep
+
+# claude-loop.sh run logs
+.claude-loop/
