@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.1.0 — Toast notifications
+
+The web UI gets a reusable feedback layer. Until now, failures were easy to miss: a bad URL paste failed silently unless you watched the queue, and a job that errored out in the background never told you. Toasts close that gap.
+
+- **Toast notification system.** Success / error / info / loading variants, plus a promise-morph form (`toast.promise`) that shows "Queueing…" and morphs into the success or error result. Built on Radix Toast primitives with a `useSyncExternalStore`-pattern store (same shape as `use-history`), semantic color tokens, enter/swipe animations, and `prefers-reduced-motion` support. Screen-reader live-region politeness maps by variant (errors are assertive, the rest polite).
+- **Wired into the flows that need feedback:** URL submission (promise toast on paste/submit), job completion and failure from the tracker — failures carry a **Retry** action that re-queues the URL with full event tracking, completions a **Reveal** action — and the Library tile menu's reveal / re-download actions report errors instead of failing silently.
+
 ## v2.0.1 — Live-test fixes
 
 Three bugs found while smoke-testing v2.0.0 against the real backend. None of them showed up in the unit tests because the tests mocked exactly the wire shapes the unit tests asserted on, not what the backend actually emits.
