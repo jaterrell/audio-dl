@@ -44,6 +44,12 @@ hiddenimports = (
     # is imported via try/except in audio_dl._find_ffmpeg, so PyInstaller's
     # static analysis would otherwise drop it.
     + ["imageio_ffmpeg"]
+    # yt-dlp's EmbedThumbnail prefers pure-Python mutagen for m4a/mp3 cover art
+    # and only falls back to ffprobe+ffmpeg when mutagen is missing. We ship
+    # imageio-ffmpeg's ffmpeg but NOT ffprobe, so without mutagen the embed step
+    # fails with "ffprobe not found" and the whole download fails at postprocess.
+    # yt-dlp imports mutagen lazily, so PyInstaller can't see it statically.
+    + collect_submodules("mutagen")
 )
 
 # The static ffmpeg binary goes into ``binaries=`` so PyInstaller treats it as

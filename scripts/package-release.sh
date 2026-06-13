@@ -45,6 +45,19 @@ mkdir -p "$STAGE"
 cp -R dist/audio-dl.app "$STAGE/"
 cp "$TEMPLATE" "$STAGE/README-FIRST.txt"
 
+# Ship the third-party notices + full license texts alongside the bundle.
+# Required for the LGPL (ffmpeg) and GPL (mutagen) components embedded in the
+# .app — the license text has to travel with the binary, not just live in the
+# repo. Both files are required; fail loudly if either is missing.
+for lic in NOTICE.md LICENSES; do
+    if [[ ! -e "$lic" ]]; then
+        echo "ERROR: ${lic} missing — required for bundled GPL/LGPL license compliance." >&2
+        exit 1
+    fi
+done
+cp NOTICE.md "$STAGE/NOTICE.md"
+cp -R LICENSES "$STAGE/LICENSES"
+
 cd dist/release
 zip -qr "${STAGE_NAME}.zip" "$STAGE_NAME"
 shasum -a 256 "${STAGE_NAME}.zip" > SHA256SUMS

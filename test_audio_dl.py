@@ -4,6 +4,7 @@
 _check_dependencies."""
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -877,6 +878,39 @@ class TestPyInstallerSpec:
         spec_text = (pathlib.Path(__file__).parent / "audio-dl.spec").read_text()
         assert "_app_entry.py" in spec_text
 
+    def test_bundle_ships_mutagen(self):
+        """mutagen must be bundled (spec hiddenimport) AND declared ([app] extra).
+
+        Regression guard for v2.1.2: yt-dlp's EmbedThumbnail uses pure-Python
+        mutagen for m4a/mp3 cover art and only falls back to an ffprobe+ffmpeg
+        path when mutagen is missing. The bundle ships ffmpeg but not ffprobe,
+        so dropping mutagen makes EVERY download fail at postprocess with
+        "ffprobe not found". Both declarations are required: the [app] extra so
+        the build env installs it, the spec hiddenimport so PyInstaller (which
+        can't see yt-dlp's lazy import) actually packages it.
+
+        Both files mention mutagen in explanatory comments, so this parses the
+        ACTUAL declarations (after stripping comments) rather than grepping raw
+        text — otherwise dropping a declaration while leaving its comment would
+        slip through. No tomllib (absent on Python 3.10, which CI still runs).
+        """
+        root = pathlib.Path(__file__).parent
+        # Strip line comments (# ... to EOL) from both files before asserting.
+        spec_code = re.sub(r"#.*", "", (root / "audio-dl.spec").read_text())
+        pyproject_code = re.sub(r"#.*", "", (root / "pyproject.toml").read_text())
+
+        # Spec: the real mechanism is a collect_submodules("mutagen") call.
+        assert (
+            'collect_submodules("mutagen")' in spec_code
+            or "collect_submodules('mutagen')" in spec_code
+        ), "audio-dl.spec hiddenimports must include collect_submodules('mutagen')"
+
+        # pyproject: mutagen must be inside the [app] extra's array, not just
+        # anywhere in the file.
+        app_array = re.search(r"app\s*=\s*\[([^\]]*)\]", pyproject_code)
+        assert app_array, "pyproject.toml [project.optional-dependencies].app array not found"
+        assert "mutagen" in app_array.group(1), "mutagen missing from pyproject.toml [app] extra"
+
 
 # ---------------------------------------------------------------------------
 # scripts/extract_changelog.py — CHANGELOG section extractor for release notes
@@ -992,6 +1026,13 @@ class TestPackageRelease:
         shutil.copy(_PACKAGE_SCRIPT, target_script)
         os.chmod(target_script, 0o755)
 
+        # Third-party license texts must ship with the bundle (LGPL ffmpeg +
+        # GPL mutagen). The script now copies these into the staging dir.
+        (tmp_path / "NOTICE.md").write_text("# Third-party notices\n")
+        licenses_dir = tmp_path / "LICENSES"
+        licenses_dir.mkdir()
+        (licenses_dir / "mutagen-GPL-2.0.txt").write_text("GNU GENERAL PUBLIC LICENSE\n")
+
         r = subprocess.run(
             ["bash", str(target_script), "v1.4.0"],
             cwd=tmp_path,
@@ -1001,10 +1042,12 @@ class TestPackageRelease:
         )
         assert r.returncode == 0, f"stderr: {r.stderr}\nstdout: {r.stdout}"
 
-        # Staged directory contains the app + README-FIRST.
+        # Staged directory contains the app + README-FIRST + license texts.
         stage = tmp_path / "dist" / "release" / "audio-dl-v1.4.0-macos-arm64"
         assert (stage / "audio-dl.app" / "Contents" / "marker").exists()
         assert (stage / "README-FIRST.txt").exists()
+        assert (stage / "NOTICE.md").exists()
+        assert (stage / "LICENSES" / "mutagen-GPL-2.0.txt").exists()
 
         # Zip and checksum files exist with the expected names.
         zip_path = tmp_path / "dist" / "release" / "audio-dl-v1.4.0-macos-arm64.zip"

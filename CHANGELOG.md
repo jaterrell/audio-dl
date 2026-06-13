@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.2 — Fix all downloads failing in the .app bundle
+
+Every download in the macOS `.app` failed at the final step: the media downloaded to 100%, then the convert/embed stage errored with `Postprocessing: Unable to embed using ffprobe & ffmpeg; ffprobe not found` and the whole job failed.
+
+Root cause: yt-dlp's `EmbedThumbnail` embeds cover art for m4a/mp3 using pure-Python **mutagen** when it's importable, and only falls back to an `ffprobe`+`ffmpeg` path when it isn't. The bundle ships `ffmpeg` (via imageio-ffmpeg) but **not** `ffprobe`, and it wasn't shipping mutagen either, so it hit the fallback and failed. It worked in development only because mutagen happened to be installed there.
+
+Fix: bundle mutagen with the `.app` — added to the `[app]` extra (so the build environment installs it) and to the PyInstaller spec's `hiddenimports` (yt-dlp imports it lazily, so PyInstaller's static scan misses it). Downloads now complete with embedded artwork using the same pure-Python path development uses, no ffprobe required. Verified end-to-end against a freshly built bundle.
+
 ## v2.1.1 — Toast + font fixes
 
 Two production-only bugs from the v2.1.0 / v2.0.0 web UI, both invisible to the unit tests because they only surfaced in the real Vite-built bundle.

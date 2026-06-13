@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audio-dl"
-version = "2.1.1"
+version = "2.1.2"
 description = "Download high-quality audio from YouTube, SoundCloud, and any other site yt-dlp supports."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -15,7 +15,10 @@ dependencies = ["yt-dlp"]
 ui = ["fastapi", "uvicorn[standard]", "httpx"]
 # Build-time deps for the macOS .app bundle (Phase 3b: embedded ffmpeg).
 # Install with: pip install -e '.[ui,app]'
-app = ["imageio-ffmpeg"]
+# mutagen: yt-dlp uses it for pure-Python thumbnail/metadata embedding. The
+# bundle ships ffmpeg but not ffprobe, so without mutagen yt-dlp falls back to
+# the ffprobe path and every download fails at postprocess ("ffprobe not found").
+app = ["imageio-ffmpeg", "mutagen"]
 
 [project.scripts]
 audio-dl = "audio_dl:main"
