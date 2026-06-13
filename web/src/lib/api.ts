@@ -29,9 +29,7 @@ export interface PostJobsRequest {
   format: Format;
 }
 
-export async function postJobs(
-  urls: PostJobsRequest[]
-): Promise<{ job_id: string; urls: { url: string; format: Format }[] }> {
+export async function postJobs(urls: PostJobsRequest[]): Promise<{ job_id: string }> {
   const r = await fetch("/jobs", {
     method: "POST",
     headers: await csrfHeaders(),

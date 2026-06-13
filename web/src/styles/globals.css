@@ -1,9 +1,11 @@
 @import "tailwindcss";
-@import "@fontsource/inter/400.css";
-@import "@fontsource/inter/500.css";
-@import "@fontsource/inter/600.css";
-@import "@fontsource/inter/700.css";
 @import "./tokens.css";
+
+/* Inter is imported from main.tsx via JS, not @import here. Tailwind v4's
+   @import resolver inlines third-party CSS but leaves its url(./files/…woff2)
+   refs verbatim, so Vite never emits the font files and they 404 in the built
+   app. A JS import runs the full Vite asset pipeline (hashes + emits the
+   woff2s). See web/src/main.tsx. */
 
 @theme {
   --color-bg: var(--bg);

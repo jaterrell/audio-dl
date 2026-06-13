@@ -82,4 +82,32 @@ describe("toast.promise", () => {
     expect(getToasts()).toHaveLength(1);
     expect(getToasts()[0]).toMatchObject({ variant: "error", title: "nope" });
   });
+
+  // Regression: v2.1.0's url-input success formatter read a field the backend
+  // never sends and threw, stranding the loading toast forever. A throwing
+  // formatter must still settle the toast.
+  it("settles to success even when the success formatter throws", async () => {
+    toast.promise(Promise.resolve({}), {
+      loading: "Loading",
+      success: (r) => `Queued ${(r as { urls: string[] }).urls.length}`,
+      error: "Err",
+    });
+    await flush();
+    expect(getToasts()).toHaveLength(1);
+    expect(getToasts()[0]).toMatchObject({ variant: "success", title: "Done" });
+    expect(getToasts()[0].duration).not.toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it("settles to error even when the error formatter throws", async () => {
+    toast.promise(Promise.reject(new Error("boom")), {
+      loading: "Loading",
+      success: "S",
+      error: () => {
+        throw new Error("formatter bug");
+      },
+    });
+    await flush();
+    expect(getToasts()).toHaveLength(1);
+    expect(getToasts()[0]).toMatchObject({ variant: "error", title: "Something went wrong" });
+  });
 });

@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.1.1 — Toast + font fixes
+
+Two production-only bugs from the v2.1.0 / v2.0.0 web UI, both invisible to the unit tests because they only surfaced in the real Vite-built bundle.
+
+- **The "Queueing…" toast no longer spins forever.** `url-input`'s success formatter read `r.urls.length` off the `POST /jobs` response, but the backend returns `{"job_id"}` only. The resulting `TypeError` fired inside the toast store's promise handler, so the loading toast never morphed to success and the error was swallowed. The success count now comes from the submitted URLs (which the client already knows), `postJobs`'s return type is corrected to `{job_id}`, and `toast.promise` now guards against a throwing message formatter so a buggy formatter can never strand a spinner again. The four `POST /jobs` test mocks were corrected to the real wire shape (the fictional `urls` key is what hid the bug).
+- **Inter now actually loads in the built app.** The font was pulled in via `@import "@fontsource/inter/…"` in `globals.css`, but Tailwind v4's `@import` resolver inlines that CSS while leaving its `url(./files/…woff2)` references verbatim, so Vite never emitted the font files and every weight 404'd (falling back to system fonts). Moved the font imports to `main.tsx` so they go through Vite's asset pipeline, which hashes and emits all 28 woff/woff2 files.
+
 ## v2.1.0 — Toast notifications
 
 The web UI gets a reusable feedback layer. Until now, failures were easy to miss: a bad URL paste failed silently unless you watched the queue, and a job that errored out in the background never told you. Toasts close that gap.

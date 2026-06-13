@@ -90,8 +90,15 @@ function dismiss(id?: string) {
 }
 
 type Msg<T> = string | ((value: T) => string);
-function resolveMsg<T>(m: Msg<T>, v: T): string {
-  return typeof m === "function" ? (m as (v: T) => string)(v) : m;
+// A throwing message formatter must never strand the loading toast — the
+// promise DID settle, so the toast must too (fall back to a generic title).
+function resolveMsg<T>(m: Msg<T>, v: T, fallback: string): string {
+  if (typeof m !== "function") return m;
+  try {
+    return (m as (v: T) => string)(v);
+  } catch {
+    return fallback;
+  }
 }
 
 export const toast = {
@@ -107,13 +114,13 @@ export const toast = {
       (v) =>
         update(id, {
           variant: "success",
-          title: resolveMsg(m.success, v),
+          title: resolveMsg(m.success, v, "Done"),
           duration: DEFAULT_DURATION.success,
         }),
       (e) =>
         update(id, {
           variant: "error",
-          title: resolveMsg(m.error, e),
+          title: resolveMsg(m.error, e, "Something went wrong"),
           duration: DEFAULT_DURATION.error,
         }),
     );

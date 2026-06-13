@@ -18,7 +18,7 @@ describe("UrlInput", () => {
     server.use(
       http.post("/jobs", async ({ request }) => {
         captured = ((await request.json()) as { urls: { url: string; format: string }[] }).urls;
-        return HttpResponse.json({ job_id: "job-x", urls: captured });
+        return HttpResponse.json({ job_id: "job-x" });
       })
     );
     const { getByPlaceholderText, getByRole } = renderUI(<UrlInput onJobCreated={onJobCreated} />);
@@ -35,7 +35,7 @@ describe("UrlInput", () => {
     server.use(
       http.post("/jobs", async ({ request }) => {
         captured = ((await request.json()) as { urls: { url: string; format: string }[] }).urls;
-        return HttpResponse.json({ job_id: "job-y", urls: captured });
+        return HttpResponse.json({ job_id: "job-y" });
       })
     );
     const { getByPlaceholderText, getByRole } = renderUI(<UrlInput onJobCreated={() => {}} />);
@@ -52,7 +52,7 @@ describe("UrlInput", () => {
 
   it("clears the input on successful submit", async () => {
     const user = userEvent.setup();
-    server.use(http.post("/jobs", () => HttpResponse.json({ job_id: "job-z", urls: [] })));
+    server.use(http.post("/jobs", () => HttpResponse.json({ job_id: "job-z" })));
     const { getByPlaceholderText, getByRole } = renderUI(<UrlInput onJobCreated={() => {}} />);
     const input = getByPlaceholderText(/paste a url/i) as HTMLInputElement;
     await user.type(input, "https://x");
@@ -74,7 +74,11 @@ describe("UrlInput toasts", () => {
   });
 
   it("shows a success toast after queueing", async () => {
-    server.use(http.post("/jobs", () => HttpResponse.json({ job_id: "j", urls: [{ url: "https://x.test/a", format: "m4a" }] })));
+    // Backend-accurate shape: post_jobs returns {"job_id"} ONLY (audio_dl_ui/__init__.py).
+    // v2.1.0 shipped with mocks returning a fictional `urls` key; the success
+    // formatter's r.urls.length then threw in production and the loading toast
+    // never resolved.
+    server.use(http.post("/jobs", () => HttpResponse.json({ job_id: "j" })));
     const user = userEvent.setup();
     renderWithToaster(<UrlInput onJobCreated={() => {}} />);
     await user.type(screen.getByPlaceholderText(/paste a url/i), "https://x.test/a");

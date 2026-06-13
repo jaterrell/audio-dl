@@ -26,7 +26,9 @@ export function UrlInput({ onJobCreated }: UrlInputProps) {
     const req = postJobs(urls);
     toast.promise(req, {
       loading: `Queueing ${urls.length} download${plural}…`,
-      success: (r) => `Queued ${r.urls.length} download${r.urls.length === 1 ? "" : "s"}`,
+      // Count comes from the submission, not the response — POST /jobs
+      // returns only {"job_id"}.
+      success: `Queued ${urls.length} download${plural}`,
       error: "Couldn't queue download",
     });
     try {
