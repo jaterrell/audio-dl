@@ -2398,3 +2398,45 @@ class TestThumbPersistOnCompletion:
 
         snap = _build_snapshot(JOBS[job_id])
         assert snap["urls"][0]["thumb_id"] is None
+
+
+class TestSelfcheck:
+    """_selfcheck_problems — the network-free bundle health probe behind
+    `audio-dl-ui --selfcheck` and the release smoke test (v2.1.2+)."""
+
+    @staticmethod
+    def _patch(monkeypatch, tmp_path, *, deps=None, mutagen=True, web_ui=True):
+        import audio_dl_ui
+        monkeypatch.setattr(audio_dl_ui, "_check_dependencies", lambda: list(deps or []))
+        if web_ui:
+            (tmp_path / "index.html").write_text("<!doctype html>")
+        monkeypatch.setattr(audio_dl_ui, "_STATIC_DIR", str(tmp_path))
+        real_find = audio_dl_ui.importlib.util.find_spec
+        monkeypatch.setattr(
+            audio_dl_ui.importlib.util,
+            "find_spec",
+            lambda name: (object() if mutagen else None) if name == "mutagen" else real_find(name),
+        )
+
+    def test_healthy_returns_empty(self, monkeypatch, tmp_path):
+        import audio_dl_ui
+        self._patch(monkeypatch, tmp_path)
+        assert not audio_dl_ui._selfcheck_problems()
+
+    def test_missing_mutagen_is_reported(self, monkeypatch, tmp_path):
+        import audio_dl_ui
+        self._patch(monkeypatch, tmp_path, mutagen=False)
+        problems = audio_dl_ui._selfcheck_problems()
+        assert any("mutagen" in p for p in problems), problems
+
+    def test_missing_web_ui_is_reported(self, monkeypatch, tmp_path):
+        import audio_dl_ui
+        self._patch(monkeypatch, tmp_path, web_ui=False)
+        problems = audio_dl_ui._selfcheck_problems()
+        assert any("web UI" in p for p in problems), problems
+
+    def test_propagates_check_dependencies(self, monkeypatch, tmp_path):
+        import audio_dl_ui
+        self._patch(monkeypatch, tmp_path, deps=["ffmpeg is not installed or not on PATH."])
+        problems = audio_dl_ui._selfcheck_problems()
+        assert any("ffmpeg" in p for p in problems), problems

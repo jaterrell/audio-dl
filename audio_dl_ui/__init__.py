@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import collections
 import hashlib
+import importlib.util
 import json
 import os
 import queue
@@ -1057,6 +1058,37 @@ def _persist_thumb(url: str, jpeg_bytes: bytes) -> str:
     return thumb_id
 
 
+def _selfcheck_problems() -> list[str]:
+    """Return problem lines for a frozen-bundle self-check (empty == healthy).
+
+    Beyond :func:`_check_dependencies` (ffmpeg + yt-dlp), this asserts the
+    pieces the DOWNLOAD path needs that a server-bind smoke test can't see:
+
+    - **mutagen** — yt-dlp embeds m4a/mp3 cover art via mutagen when it's
+      importable, else falls back to an ``ffprobe``+``ffmpeg`` path. The
+      bundle ships ``ffmpeg`` but NOT ``ffprobe``, so a bundle without
+      mutagen fails EVERY download at postprocess. This is the v2.1.2
+      regression; the release smoke test must catch a recurrence.
+    - **web UI** — an empty ``static/`` means the bundle serves no app.
+
+    Pure function: no stdout/stderr, no ``sys.exit`` — same contract as
+    :func:`_check_dependencies`, so the GUI/smoke-test callers decide how to
+    surface failures.
+    """
+    problems = list(_check_dependencies())
+    if importlib.util.find_spec("mutagen") is None:
+        problems.append(
+            "mutagen is not available — yt-dlp needs it to embed cover art. "
+            "The bundle ships ffmpeg but not ffprobe, so without mutagen every "
+            "download fails at postprocess. Add it to the [app] extra and the "
+            "PyInstaller spec hiddenimports."
+        )
+    index = os.path.join(_STATIC_DIR, "index.html")
+    if not os.path.isfile(index):
+        problems.append(f"web UI bundle missing: {index} not found (run scripts/build-web.sh).")
+    return problems
+
+
 def _check_dependencies_gui() -> None:
     """Pre-flight dep check that surfaces failures sensibly for both shells and the ``.app``.
 
@@ -1101,6 +1133,12 @@ def main():
     )
     parser.add_argument("--no-browser", action="store_true", help="Do not auto-open the browser.")
     parser.add_argument(
+        "--selfcheck", action="store_true",
+        help="Verify the bundle has everything downloads need (ffmpeg, yt-dlp, "
+             "mutagen, web UI), print the result, and exit 0/1. Used by the "
+             "release smoke test to catch packaging gaps before publish.",
+    )
+    parser.add_argument(
         "--allow-remote", action="store_true",
         help="Allow binding to non-loopback hosts (LAN/public). Default refuses for safety.",
     )
@@ -1123,6 +1161,18 @@ def main():
              "(1-64, default: 4).",
     )
     args = parser.parse_args()
+
+    # Self-check and exit (no server). Runs before any host/CSRF setup so it's
+    # a pure "is this bundle healthy" probe for the release smoke test.
+    if args.selfcheck:
+        problems = _selfcheck_problems()
+        if problems:
+            print("selfcheck FAILED:", file=sys.stderr)
+            for line in problems:
+                print(f"  - {line}", file=sys.stderr)
+            sys.exit(1)
+        print("selfcheck OK: ffmpeg, yt-dlp, mutagen, and web UI all present.")
+        sys.exit(0)
 
     # Refuse non-loopback bind without explicit opt-in.
     if args.host not in ("127.0.0.1", "localhost", "::1") and not args.allow_remote:

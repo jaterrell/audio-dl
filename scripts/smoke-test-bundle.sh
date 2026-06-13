@@ -17,6 +17,17 @@ if [[ ! -x "$BIN" ]]; then
     exit 1
 fi
 
+# Self-check FIRST: verify the bundle actually contains everything a download
+# needs (ffmpeg, yt-dlp, mutagen, web UI). This is network-free and catches
+# packaging gaps the HTTP serve test below can't see — e.g. v2.1.0/v2.1.1
+# shipped without mutagen and every download failed at postprocess, yet the
+# server bound on :8000 just fine. Fail the release before publish.
+echo "Running bundle self-check: $BIN --selfcheck"
+if ! "$BIN" --selfcheck; then
+    echo "Smoke test FAILED: bundle self-check reported missing components (see above)." >&2
+    exit 1
+fi
+
 LOG="$(mktemp -t audio-dl-smoke.XXXXXX)"
 trap 'rm -f "$LOG"' EXIT
 
