@@ -148,10 +148,14 @@ duo** and is overridden by the extractor when a track plays:
 --on-accent: #fff;  /* recomputed by extractor per luminance */
 ```
 
-**Reset to base** (idle / no-art / route change) = set `--accent` /
-`--accent-2` back to `var(--brand)` / `var(--brand-2)` (mode-correct), *not*
-`removeProperty` (which would fall to the `@property` initial value and be
-wrong in light mode). `--on-accent` resets to the brand's correct on-color.
+**Reset to base** (idle / no-art / route change) = **remove** the inline
+accent overrides from `:root`. The extractor writes `--accent` etc. as inline
+styles on `documentElement`; removing them reveals the stylesheet rule
+`--accent: var(--brand)`, which is mode-correct. (The `@property` initial value
+is only a last resort when no declaration exists anywhere — here the stylesheet
+always declares the brand fallback, so `removeProperty` is the simplest correct
+reset.) The `@property` transition still interpolates from the extracted color
+back to the brand value.
 
 ### 3 · Crossfade via typed custom properties
 
