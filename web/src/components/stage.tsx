@@ -1,7 +1,7 @@
-import { useRef } from "react";
 import { AlbumArt } from "./album-art";
 import { CancelDialog } from "./cancel-dialog";
-import { useVibrant } from "@/hooks/use-vibrant";
+import { useAlbumColor } from "@/hooks/use-album-color";
+import { useResolvedTheme } from "@/hooks/use-theme";
 import type { JobSnapshot } from "@/lib/types";
 
 interface HeroStageProps {
@@ -10,10 +10,10 @@ interface HeroStageProps {
 }
 
 export function HeroStage({ snapshot, activeCount }: HeroStageProps) {
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  useVibrant(imgRef);
-
   const u = snapshot.urls[0];
+  const mode = useResolvedTheme();
+  useAlbumColor(u?.thumb_id ? `/thumbs/${u.thumb_id}.jpg` : null, mode);
+
   if (!u) return null;
   const title = u.title ?? u.url;
   const artist = u.uploader ?? "";
@@ -29,17 +29,6 @@ export function HeroStage({ snapshot, activeCount }: HeroStageProps) {
         <div className="absolute top-2 right-2">
           <CancelDialog jobId={snapshot.job_id} />
         </div>
-        {/* Off-screen image used by useVibrant for color extraction.
-            AlbumArt has its own internal <img>; this duplicates it as a hidden
-            element with a ref we can pass to the hook. */}
-        <img
-          ref={imgRef}
-          src={u.thumb_id ? `/thumbs/${u.thumb_id}.jpg` : ""}
-          alt=""
-          crossOrigin="anonymous"
-          referrerPolicy="no-referrer"
-          className="absolute opacity-0 pointer-events-none w-0 h-0"
-        />
       </div>
       <div className="text-center mt-6">
         <div className="text-[11px] uppercase tracking-[0.06em] font-bold text-[var(--accent)] mb-2">
@@ -54,7 +43,7 @@ export function HeroStage({ snapshot, activeCount }: HeroStageProps) {
               style={{
                 width: `${u.progress_percent}%`,
                 background: "linear-gradient(90deg, var(--accent), var(--accent-2))",
-                boxShadow: "0 0 8px var(--accent)",
+                boxShadow: "0 0 10px color-mix(in srgb, var(--accent) 50%, transparent)",
               }}
             />
           </div>

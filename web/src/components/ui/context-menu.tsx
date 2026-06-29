@@ -14,8 +14,8 @@ export const ContextMenuContent = React.forwardRef<
     <ContextMenuPrimitive.Content
       ref={ref}
       className={cn(
-        "z-50 min-w-[12rem] overflow-hidden rounded-[var(--radius-md)]",
-        "border border-[var(--border)] bg-[#101013] p-1 shadow-md",
+        "pop-anim z-50 min-w-[12rem] overflow-hidden rounded-[var(--radius-md)]",
+        "border border-[var(--border)] bg-[var(--popover)] p-1 shadow-md",
         "text-sm text-[var(--text)]",
         className
       )}

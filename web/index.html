@@ -3,7 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>audio-dl</title>
+    <script>
+      // Set data-theme before first paint so the correct background renders with
+      // no flash. Shares the `audio_dl_settings` key + `theme` field with
+      // web/src/hooks/use-settings.ts — keep both in sync.
+      (function () {
+        try {
+          var s = JSON.parse(localStorage.getItem("audio_dl_settings") || "{}");
+          var t = s.theme || "system";
+          if (t === "system") {
+            t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

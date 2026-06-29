@@ -28,12 +28,16 @@ function NowScreen() {
         <JobTracker key={id} jobId={id} onJobCreated={(newId) => setTrackedJobs((prev) => [...prev, newId])} />
       ))}
       {stageJob ? (
-        <HeroStage
-          snapshot={stageJob}
-          activeCount={activeJobs.filter((j) => j.state === "running").length}
-        />
+        <div key={stageJob.job_id} className="enter-fade">
+          <HeroStage
+            snapshot={stageJob}
+            activeCount={activeJobs.filter((j) => j.state === "running").length}
+          />
+        </div>
       ) : (
-        <EmptyStage latest={history[0] ?? null} />
+        <div key="empty" className="enter-fade">
+          <EmptyStage latest={history[0] ?? null} />
+        </div>
       )}
       <AlsoDownloading jobs={otherRunning} />
       <Queue jobs={queued} />

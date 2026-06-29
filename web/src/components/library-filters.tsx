@@ -33,7 +33,7 @@ export function LibraryFilters({
           value={search}
           onChange={(e) => handleSearchChange(e.target.value)}
           placeholder="Search by title or artist"
-          className="w-full bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] pl-9 pr-3 py-2 rounded-[var(--radius-md)] text-sm outline-none placeholder:text-[var(--text-3)]"
+          className="focus-ring w-full bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] pl-9 pr-3 py-2 rounded-[var(--radius-md)] text-sm outline-none placeholder:text-[var(--text-3)]"
         />
       </div>
       <div className="flex gap-1.5">
@@ -43,9 +43,9 @@ export function LibraryFilters({
             type="button"
             onClick={() => toggle(f)}
             className={cn(
-              "px-3 py-1.5 rounded-full text-xs font-medium transition-colors",
+              "focus-ring px-3 py-1.5 rounded-full text-xs font-medium transition-colors",
               formats.includes(f)
-                ? "bg-[var(--accent)] text-white"
+                ? "bg-[var(--accent)] text-[var(--on-accent)]"
                 : "bg-[var(--surface)] text-[var(--text-2)] border border-[var(--border)]"
             )}
           >

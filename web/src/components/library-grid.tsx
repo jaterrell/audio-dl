@@ -22,7 +22,7 @@ export function LibraryGrid({ items, onRemove }: LibraryGridProps) {
       {groups.map((g) => (
         <div key={g.label} className="mb-8">
           <h3 className="text-lg font-bold tracking-tight mb-4 sticky top-0 bg-[var(--bg)] py-2">{g.label}</h3>
-          <div className="grid grid-cols-6 gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3">
             {g.items.map((h) => (
               <LibraryTileMenu key={h.url} item={h} onRemove={onRemove}>
                 <div data-testid="library-tile" className="cursor-context-menu">

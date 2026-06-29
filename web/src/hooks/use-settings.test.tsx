@@ -22,3 +22,16 @@ describe("useSettings", () => {
     expect(result.current.settings.default_format).toBe("opus");
   });
 });
+
+describe("useSettings theme", () => {
+  it("defaults theme to system", () => {
+    const { result } = renderHook(() => useSettings());
+    expect(result.current.settings.theme).toBe("system");
+  });
+  it("persists and re-reads theme", () => {
+    const { result } = renderHook(() => useSettings());
+    act(() => result.current.setTheme("light"));
+    expect(result.current.settings.theme).toBe("light");
+    expect(JSON.parse(localStorage.getItem("audio_dl_settings")!).theme).toBe("light");
+  });
+});

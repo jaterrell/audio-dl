@@ -16,7 +16,8 @@ export const ToastViewport = React.forwardRef<
     className={cn(
       "fixed z-[100] flex flex-col gap-2.5 outline-none",
       "top-4 right-4 w-[380px] max-w-[calc(100vw-2rem)]",
-      "max-sm:top-auto max-sm:bottom-0 max-sm:inset-x-0 max-sm:w-full max-sm:max-w-full max-sm:p-3",
+      "max-sm:top-auto max-sm:bottom-0 max-sm:inset-x-0 max-sm:w-full max-sm:max-w-full",
+      "max-sm:p-3 max-sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
       className,
     )}
     {...props}
@@ -32,7 +33,7 @@ export const Toast = React.forwardRef<
     ref={ref}
     className={cn(
       "toast relative flex items-start gap-3 rounded-[var(--radius-lg)] border p-3",
-      "bg-[#141417] border-[var(--border)] text-[var(--text)]",
+      "bg-[var(--popover)] border-[var(--border)] text-[var(--text)]",
       className,
     )}
     {...props}

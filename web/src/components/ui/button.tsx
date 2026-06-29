@@ -6,11 +6,12 @@ import { cn } from "@/lib/utils";
 export const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[var(--radius-md)] " +
     "text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 " +
-    "focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] disabled:pointer-events-none disabled:opacity-50",
+    "focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg)] " +
+    "disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       variant: {
-        default: "bg-[var(--accent)] text-white hover:opacity-90 shadow-[0_4px_16px_var(--ambient)]",
+        default: "bg-[var(--accent)] text-[var(--on-accent)] hover:opacity-90 shadow-[0_4px_16px_var(--ambient)]",
         ghost: "hover:bg-[var(--surface)] text-[var(--text-2)]",
         outline: "border border-[var(--border)] bg-transparent hover:bg-[var(--surface)] text-[var(--text)]",
       },

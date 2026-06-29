@@ -28,7 +28,7 @@ export function FormatPicker({ value, onChange }: FormatPickerProps) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="px-3 py-2 rounded-[var(--radius-md)] bg-[var(--surface)] border border-[var(--border)] text-sm font-medium text-[var(--text-2)] inline-flex items-center gap-2 cursor-pointer"
+          className="focus-ring px-3 py-2 rounded-[var(--radius-md)] bg-[var(--surface-strong)] border border-[var(--border)] text-sm font-medium text-[var(--text-2)] inline-flex items-center gap-2 cursor-pointer"
         >
           {value} · {QUALITY_HINT[value]}
           <ChevronDown size={12} className="text-[var(--text-3)]" />

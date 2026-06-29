@@ -1,26 +1,66 @@
 :root {
-  /* surface tokens — dark, the only mode */
-  --bg: #08080a;
-  --surface: rgb(255 255 255 / 0.04);
-  --surface-strong: rgb(255 255 255 / 0.08);
-  --border: rgb(255 255 255 / 0.07);
-  --text: #f5f5f7;
-  --text-2: #a1a1aa;
-  --text-3: #71717a;
-
-  /* adaptive accent — overwritten at runtime by useVibrant */
-  --accent: #818cf8;
-  --accent-2: #c084fc;
-  --ambient: rgb(129 140 248 / 0.18);
-
   /* radii */
   --radius-lg: 14px;
   --radius-md: 10px;
   --radius-sm: 6px;
+}
 
-  /* semantic status colors — accent is hijacked by useVibrant, so it can't carry meaning */
+/* Registered as <color> so accent swaps can crossfade (see globals.css). */
+@property --accent   { syntax: "<color>"; inherits: true; initial-value: #818cf8; }
+@property --accent-2 { syntax: "<color>"; inherits: true; initial-value: #c084fc; }
+@property --ambient  { syntax: "<color>"; inherits: true; initial-value: rgb(129 140 248 / 0.18); }
+
+:root,
+[data-theme="dark"] {
+  /* surface tokens — dark */
+  --bg: #08080a;
+  --surface: rgb(255 255 255 / 0.04);
+  --surface-strong: rgb(255 255 255 / 0.08);
+  --border: rgb(255 255 255 / 0.07);
+  --popover: #101013;
+  --text: #f5f5f7;
+  --text-2: #a1a1aa;
+  --text-3: #71717a;
+
+  /* designed brand base (hybrid identity) */
+  --brand: #818cf8;
+  --brand-2: #c084fc;
+
+  /* accent defaults to brand; useAlbumColor overrides inline on :root while a
+     track plays, and removes the override (revealing brand) when idle/no-art */
+  --accent: var(--brand);
+  --accent-2: var(--brand-2);
+  --ambient: rgb(129 140 248 / 0.18);
+  --on-accent: #18181b;
+
+  /* semantic status colors — accent is hijacked by useAlbumColor, so it can't carry meaning */
   --ok: #34d399;   --ok-bg: rgb(52 211 153 / 0.14);
   --err: #f87171;  --err-bg: rgb(248 113 113 / 0.14);
   --warn: #fbbf24; --warn-bg: rgb(251 191 36 / 0.14);
   --info: #60a5fa; --info-bg: rgb(96 165 250 / 0.14);
+}
+
+[data-theme="light"] {
+  /* surface tokens — light */
+  --bg: #fbfbfd;
+  --surface: rgb(0 0 0 / 0.04);
+  --surface-strong: rgb(0 0 0 / 0.07);
+  --border: rgb(0 0 0 / 0.10);
+  --popover: #ffffff;
+  --text: #18181b;
+  --text-2: #52525b;
+  --text-3: #71717a;
+
+  --brand: #6366f1;
+  --brand-2: #9333ea;
+
+  --accent: var(--brand);
+  --accent-2: var(--brand-2);
+  --ambient: rgb(99 102 241 / 0.16);
+  --on-accent: #18181b;
+
+  --ok: #059669;   --ok-bg: rgb(5 150 105 / 0.12);
+  --err: #dc2626;  --err-bg: rgb(220 38 38 / 0.12);
+  --warn: #d97706; --warn-bg: rgb(217 119 6 / 0.12);
+  --info: #2563eb; --info-bg: rgb(37 99 235 / 0.12);
 }

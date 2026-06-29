@@ -43,7 +43,7 @@ export function UrlInput({ onJobCreated }: UrlInputProps) {
   }
 
   return (
-    <div className="mx-7 mb-8 grid grid-cols-[1fr_auto_auto] gap-2 p-2 bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-lg)]">
+    <div className="mx-4 sm:mx-8 mb-8 flex flex-col sm:grid sm:grid-cols-[1fr_auto_auto] gap-2 p-2 bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-lg)]">
       <textarea
         rows={1}
         placeholder="Paste a URL to queue it next…"
@@ -55,7 +55,7 @@ export function UrlInput({ onJobCreated }: UrlInputProps) {
             handleAdd();
           }
         }}
-        className="bg-transparent border-none text-[var(--text)] px-3 py-2 text-sm outline-none placeholder:text-[var(--text-3)] resize-none"
+        className="focus-ring bg-transparent border-none text-[var(--text)] px-3 py-2 text-sm outline-none placeholder:text-[var(--text-3)] resize-none rounded-[var(--radius-md)]"
       />
       <FormatPicker value={settings.default_format} onChange={setDefaultFormat} />
       <Button onClick={handleAdd} disabled={submitting || !value.trim()}>
