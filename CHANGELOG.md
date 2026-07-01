@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.2.0 — Light & dark themes, a colorful Now Playing, and a more reliable web UI
+
+The biggest web-UI release since the v2.0 rewrite. The interface now ships light, dark, and system theme modes — a toggle in the header, remembered across launches, with no flash of the wrong theme on load. The "Now Playing" view is genuinely colorful: the current track's album art tints the UI on a refined indigo/violet base, crossfading between tracks and contrast-clamped so text stays legible in either theme. Under the hood the album-art color engine was rewritten — replacing the 136 KB `node-vibrant` dependency that loaded on every download with a ~2 KB built-in extractor — and a cluster of reliability and polish gaps were closed.
+
+### Added
+- Light / dark / system theme modes: a header toggle, persisted across launches, with no flash of the wrong theme on load.
+- Colorful "Now Playing": the album-art accent color layered on a designed indigo/violet base, crossfading between tracks and contrast-safe in both themes.
+- A subtle motion layer: animated menus, dialogs, album-art fade-in, and stage/route transitions, all respecting "reduce motion".
+- Responsive layout that works down to phone widths.
+- Keyboard focus rings on every control, and accessible labels on the URL and library-search inputs.
+- Multi-URL pastes now show every track in the queue and "also downloading" lists; the library distinguishes "no results" (filtered) from "nothing yet" (empty); the hero shows a loading placeholder instead of a raw URL while a title is still loading.
+
+### Changed
+- Replaced the `node-vibrant` album-art color library with a built-in canvas extractor, removing ~136 KB (gzipped) from what loads on each download.
+
+### Fixed
+- A dropped connection mid-download now shows a "reconnecting" notice instead of silently freezing the progress bar.
+- Failed cancels and re-download errors are surfaced as notifications instead of swallowed into the console.
+- Download tracking (live progress, completion toast, library history) now survives switching between pages, and library re-downloads are tracked like any other job.
+- Accent text now picks black or white per WCAG contrast, so button labels stay legible on any album color.
+
 ## v2.1.2 — Fix all downloads failing in the .app bundle
 
 Every download in the macOS `.app` failed at the final step: the media downloaded to 100%, then the convert/embed stage errored with `Postprocessing: Unable to embed using ffprobe & ffmpeg; ffprobe not found` and the whole job failed.
