@@ -6,13 +6,16 @@ import type { HistoryItem } from "@/lib/types";
 interface LibraryGridProps {
   items: HistoryItem[];
   onRemove: (url: string) => void;
+  isFiltered?: boolean;
 }
 
-export function LibraryGrid({ items, onRemove }: LibraryGridProps) {
+export function LibraryGrid({ items, onRemove, isFiltered = false }: LibraryGridProps) {
   if (items.length === 0) {
     return (
       <div className="px-8 py-16 text-center text-[var(--text-2)] text-base font-light">
-        Nothing yet. Downloads will appear here once they finish.
+        {isFiltered
+          ? "No results. Try a different search or format filter."
+          : "Nothing yet. Downloads will appear here once they finish."}
       </div>
     );
   }

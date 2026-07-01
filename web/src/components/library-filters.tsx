@@ -32,6 +32,7 @@ export function LibraryFilters({
         <input
           value={search}
           onChange={(e) => handleSearchChange(e.target.value)}
+          aria-label="Search your library"
           placeholder="Search by title or artist"
           className="focus-ring w-full bg-[var(--surface)] border border-[var(--border)] text-[var(--text)] pl-9 pr-3 py-2 rounded-[var(--radius-md)] text-sm outline-none placeholder:text-[var(--text-3)]"
         />

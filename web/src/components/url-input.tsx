@@ -4,12 +4,9 @@ import { FormatPicker } from "./format-picker";
 import { useSettings } from "@/hooks/use-settings";
 import { postJobs } from "@/lib/api";
 import { toast } from "@/lib/toast-store";
+import { trackJob } from "@/lib/tracked-jobs";
 
-interface UrlInputProps {
-  onJobCreated: (jobId: string) => void;
-}
-
-export function UrlInput({ onJobCreated }: UrlInputProps) {
+export function UrlInput() {
   const { settings, setDefaultFormat } = useSettings();
   const [value, setValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -33,7 +30,7 @@ export function UrlInput({ onJobCreated }: UrlInputProps) {
     });
     try {
       const r = await req;
-      onJobCreated(r.job_id);
+      trackJob(r.job_id);
       setValue("");
     } catch {
       /* surfaced by the toast above */
@@ -46,6 +43,7 @@ export function UrlInput({ onJobCreated }: UrlInputProps) {
     <div className="mx-4 sm:mx-8 mb-8 flex flex-col sm:grid sm:grid-cols-[1fr_auto_auto] gap-2 p-2 bg-[var(--surface)] border border-[var(--border)] rounded-[var(--radius-lg)]">
       <textarea
         rows={1}
+        aria-label="URL to download"
         placeholder="Paste a URL to queue it next…"
         value={value}
         onChange={(e) => setValue(e.target.value)}

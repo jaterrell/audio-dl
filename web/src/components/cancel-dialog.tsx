@@ -9,6 +9,7 @@ import {
   AlertDialogCancel,
 } from "./ui/alert-dialog";
 import { cancelJob } from "@/lib/api";
+import { toast } from "@/lib/toast-store";
 
 interface CancelDialogProps {
   jobId: string;
@@ -43,7 +44,13 @@ export function CancelDialog({ jobId, size = "md" }: CancelDialogProps) {
             Keep
           </AlertDialogCancel>
           <AlertDialogAction
-            onClick={() => cancelJob(jobId).catch(console.error)}
+            onClick={() =>
+              toast.promise(cancelJob(jobId), {
+                loading: "Cancelling…",
+                success: "Download cancelled",
+                error: "Couldn't cancel — try again",
+              })
+            }
             className="focus-ring px-4 py-2 text-sm rounded-[var(--radius-md)] bg-[var(--accent)] text-[var(--on-accent)] font-medium"
           >
             Confirm cancel

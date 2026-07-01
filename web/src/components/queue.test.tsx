@@ -31,4 +31,19 @@ describe("Queue", () => {
     const { getAllByTestId } = renderUI(<Queue jobs={[snap("a"), snap("b")]} />);
     expect(getAllByTestId("queue-row")).toHaveLength(2);
   });
+
+  it("renders a row per URL for a multi-URL job and counts URLs", () => {
+    const multi: JobSnapshot = {
+      job_id: "batch",
+      state: "queued",
+      started_at: 0,
+      urls: ["https://1", "https://2", "https://3"].map((url) => ({
+        url, media_format: "m4a", state: "queued", progress_percent: 0,
+        speed: null, eta: null, paths: [], error: null, thumb_id: null, title: null, uploader: null,
+      })),
+    };
+    const { getAllByTestId, getByText } = renderUI(<Queue jobs={[multi]} />);
+    expect(getAllByTestId("queue-row")).toHaveLength(3);
+    expect(getByText(/3 queued/)).toBeInTheDocument();
+  });
 });

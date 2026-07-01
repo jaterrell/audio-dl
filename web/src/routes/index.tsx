@@ -1,5 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
 import { useActiveJobs } from "@/hooks/use-active-jobs";
 import { useHistory } from "@/hooks/use-history";
 import { HeroStage } from "@/components/stage";
@@ -7,16 +6,19 @@ import { EmptyStage } from "@/components/empty-stage";
 import { AlsoDownloading } from "@/components/also-downloading";
 import { Queue } from "@/components/queue";
 import { UrlInput } from "@/components/url-input";
-import { JobTracker } from "@/components/job-tracker";
 
 export const Route = createFileRoute("/")({ component: NowScreen });
 
 function NowScreen() {
   const activeJobs = useActiveJobs();
   const { history } = useHistory();
-  const [trackedJobs, setTrackedJobs] = useState<string[]>([]);
 
   const stageJob = activeJobs.find((j) => j.state === "running") ?? null;
+  // HeroStage only renders urls[0]; pass urls[1:] of the stage job to
+  // AlsoDownloading so every URL in a multi-URL batch is visible.
+  const stageExtraUrls = stageJob && stageJob.urls.length > 1
+    ? [{ ...stageJob, urls: stageJob.urls.slice(1) }]
+    : [];
   const otherRunning = activeJobs.filter(
     (j) => j.job_id !== stageJob?.job_id && j.state === "running"
   );
@@ -24,9 +26,6 @@ function NowScreen() {
 
   return (
     <>
-      {trackedJobs.map((id) => (
-        <JobTracker key={id} jobId={id} onJobCreated={(newId) => setTrackedJobs((prev) => [...prev, newId])} />
-      ))}
       {stageJob ? (
         <div key={stageJob.job_id} className="enter-fade">
           <HeroStage
@@ -39,9 +38,9 @@ function NowScreen() {
           <EmptyStage latest={history[0] ?? null} />
         </div>
       )}
-      <AlsoDownloading jobs={otherRunning} />
+      <AlsoDownloading jobs={[...stageExtraUrls, ...otherRunning]} stageJobId={stageJob?.job_id} />
       <Queue jobs={queued} />
-      <UrlInput onJobCreated={(id) => setTrackedJobs((prev) => [...prev, id])} />
+      <UrlInput />
     </>
   );
 }

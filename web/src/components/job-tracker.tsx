@@ -4,6 +4,7 @@ import { useJobEvents } from "@/hooks/use-job-events";
 import { useHistory } from "@/hooks/use-history";
 import { reveal, postJobs } from "@/lib/api";
 import { toast } from "@/lib/toast-store";
+import { untrackJob } from "@/lib/tracked-jobs";
 import type { JobSnapshot } from "@/lib/types";
 
 const TERMINAL: JobSnapshot["state"][] = ["completed", "failed", "cancelled"];
@@ -44,11 +45,16 @@ export function JobTracker({ jobId, onJobCreated }: { jobId: string; onJobCreate
             : undefined,
         });
       } else if (u.state === "failed") {
+        const failId = `fail-${jobId}-${u.url}`;
         toast.error("Download failed", {
+          id: failId,
           description: u.error ?? u.title ?? u.url,
           action: {
             label: "Retry",
             onClick: () => {
+              // Clear the sticky failure toast so it doesn't linger beside the
+              // new re-downloading toast.
+              toast.dismiss(failId);
               postJobs([{ url: u.url, format: u.media_format }])
                 .then((r) => {
                   onJobCreated?.(r.job_id);
@@ -61,8 +67,11 @@ export function JobTracker({ jobId, onJobCreated }: { jobId: string; onJobCreate
       }
     }
 
-    setTimeout(() => queryClient.removeQueries({ queryKey: ["job", jobId] }), 1500);
-  }, [data, addItem, jobId, queryClient]);
+    setTimeout(() => {
+      queryClient.removeQueries({ queryKey: ["job", jobId] });
+      untrackJob(jobId);
+    }, 1500);
+  }, [data, addItem, jobId, queryClient, onJobCreated]);
 
   return null;
 }

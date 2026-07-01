@@ -36,7 +36,11 @@ function LibraryScreen() {
         search={search} formats={formats} availableFormats={availableFormats}
         onSearchChange={setSearch} onFormatsChange={setFormats}
       />
-      <LibraryGrid items={filtered} onRemove={removeItem} />
+      <LibraryGrid
+        items={filtered}
+        onRemove={removeItem}
+        isFiltered={search.trim() !== "" || formats.length > 0}
+      />
     </>
   );
 }

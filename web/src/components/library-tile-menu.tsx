@@ -9,6 +9,7 @@ import {
 import { reveal, postJobs } from "@/lib/api";
 import type { HistoryItem } from "@/lib/types";
 import { toast } from "@/lib/toast-store";
+import { trackJob } from "@/lib/tracked-jobs";
 
 interface LibraryTileMenuProps {
   item: HistoryItem;
@@ -27,7 +28,9 @@ export function LibraryTileMenu({ item, onRemove, children }: LibraryTileMenuPro
   }
   async function handleReDownload() {
     try {
-      await postJobs([{ url: item.url, format: item.media_format }]);
+      const r = await postJobs([{ url: item.url, format: item.media_format }]);
+      // Track it so a JobTracker mounts (SSE progress, completion toast, history).
+      trackJob(r.job_id);
       toast.success("Re-downloading…", { description: item.title ?? item.url });
     } catch {
       toast.error("Couldn't start re-download");

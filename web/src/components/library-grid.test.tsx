@@ -24,4 +24,12 @@ describe("LibraryGrid", () => {
     const { getByText } = renderUI(<LibraryGrid items={[]} onRemove={() => {}} />);
     expect(getByText(/nothing yet/i)).toBeInTheDocument();
   });
+
+  it("distinguishes 'no results' from 'nothing yet' when filtering", () => {
+    const { getByText, queryByText } = renderUI(
+      <LibraryGrid items={[]} onRemove={() => {}} isFiltered />
+    );
+    expect(getByText(/no results/i)).toBeInTheDocument();
+    expect(queryByText(/nothing yet/i)).toBeNull();
+  });
 });

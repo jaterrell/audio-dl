@@ -3,6 +3,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode } from "react";
 import { useJobEvents } from "./use-job-events";
+import { resetToastStore, getToasts } from "@/lib/toast-store";
 import type { JobSnapshot } from "@/lib/types";
 
 class MockEventSource {
@@ -23,6 +24,7 @@ class MockEventSource {
 
 beforeEach(() => {
   MockEventSource.instances = [];
+  resetToastStore();
   (globalThis as unknown as { EventSource: typeof MockEventSource }).EventSource = MockEventSource;
 });
 
@@ -339,5 +341,62 @@ describe("useJobEvents", () => {
     );
     const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
     expect(snap.urls[0].uploader).toBe("Artist Name");
+  });
+
+  it("surfaces a 'lost connection' toast when the stream drops mid-download, and clears it on reconnect", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+
+    // establish a running (non-terminal) snapshot
+    es.emit(makeSnapshotEvent());
+    await waitFor(() =>
+      expect(client.getQueryData<JobSnapshot>(["job", "job-1"])).toBeDefined()
+    );
+
+    // stream drops while still running → user-visible toast, stream NOT closed
+    es.onerror?.(new Event("error"));
+    await waitFor(() =>
+      expect(getToasts().some((t) => /lost connection/i.test(t.title))).toBe(true)
+    );
+    expect(es.closed).toBe(false);
+
+    // reconnect: the next message clears the toast
+    es.emit(makeSnapshotEvent());
+    await waitFor(() =>
+      expect(getToasts().some((t) => /lost connection/i.test(t.title))).toBe(false)
+    );
+  });
+
+  it("does not toast on the terminal-state error (clean stream close)", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+
+    es.emit(
+      makeSnapshotEvent({
+        complete: true,
+        urls: [
+          {
+            url: "https://a",
+            media_format: "mp3",
+            status: "completed",
+            percent: 100,
+            speed: null,
+            eta: null,
+            paths: ["/tmp/a.mp3"],
+            error: null,
+            thumb_id: null,
+            title: null,
+            uploader: null,
+          },
+        ],
+      })
+    );
+    await waitFor(() => expect(es.closed).toBe(true));
+    es.onerror?.(new Event("error"));
+    expect(getToasts().some((t) => /lost connection/i.test(t.title))).toBe(false);
   });
 });

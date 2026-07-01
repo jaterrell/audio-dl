@@ -26,9 +26,13 @@ function snapshot(overrides: Partial<JobSnapshot["urls"][0]> = {}): JobSnapshot 
 }
 
 describe("HeroStage", () => {
-  it("renders the URL as the title when no parsed title is available", () => {
-    const { container } = renderUI(<HeroStage snapshot={snapshot()} activeCount={1} />);
-    expect(container.textContent).toMatch(/https:\/\/a/);
+  it("shows a loading skeleton, not the raw URL, while the title is still pending", () => {
+    const { container, queryByLabelText } = renderUI(
+      <HeroStage snapshot={snapshot()} activeCount={1} />
+    );
+    // the raw URL must not flash as the hero title during the metadata gap
+    expect(container.textContent).not.toMatch(/https:\/\/a/);
+    expect(queryByLabelText("Loading title")).toBeInTheDocument();
   });
 
   it("renders 'Downloading · 1 of N' eyebrow", () => {

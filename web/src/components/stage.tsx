@@ -15,7 +15,6 @@ export function HeroStage({ snapshot, activeCount }: HeroStageProps) {
   useAlbumColor(u?.thumb_id ? `/thumbs/${u.thumb_id}.jpg` : null, mode);
 
   if (!u) return null;
-  const title = u.title ?? u.url;
   const artist = u.uploader ?? "";
 
   return (
@@ -34,7 +33,14 @@ export function HeroStage({ snapshot, activeCount }: HeroStageProps) {
         <div className="text-[11px] uppercase tracking-[0.06em] font-bold text-[var(--accent)] mb-2">
           Downloading · 1 of {activeCount}
         </div>
-        <h2 className="text-[26px] font-bold tracking-[-0.025em] leading-tight mb-1">{title}</h2>
+        {u.title ? (
+          <h2 className="text-[26px] font-bold tracking-[-0.025em] leading-tight mb-1">{u.title}</h2>
+        ) : (
+          <div
+            className="h-7 w-56 max-w-[70vw] mx-auto rounded-md bg-white/10 animate-pulse motion-reduce:animate-none mb-1"
+            aria-label="Loading title"
+          />
+        )}
         {artist && <p className="text-[var(--text-2)] text-[15px] mb-6">{artist}</p>}
         <div className="w-full max-w-[460px] mx-auto">
           <div className="h-1 bg-white/10 rounded-full overflow-hidden">

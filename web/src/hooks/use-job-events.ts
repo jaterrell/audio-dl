@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { JobSnapshot, UrlState, UrlStateName, Format } from "@/lib/types";
 import { discoverCsrfToken } from "@/lib/csrf";
+import { toast } from "@/lib/toast-store";
 
 type BackendUrlStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
@@ -122,6 +123,8 @@ export function useJobEvents(jobId: string) {
   useEffect(() => {
     let cancelled = false;
     let es: EventSource | null = null;
+    let disconnected = false;
+    const sseToastId = `sse-${jobId}`;
     (async () => {
       const token = await discoverCsrfToken();
       if (cancelled) return;
@@ -130,6 +133,12 @@ export function useJobEvents(jobId: string) {
         : `/jobs/${jobId}/events`;
       es = new EventSource(url);
       es.onmessage = (e) => {
+        // A successful message means the stream is healthy again — clear any
+        // "lost connection" toast a prior onerror may have raised.
+        if (disconnected) {
+          disconnected = false;
+          toast.dismiss(sseToastId);
+        }
         try {
           const event = JSON.parse(e.data) as AnyEvent;
           applyEvent(queryClient, jobId, event);
@@ -145,19 +154,30 @@ export function useJobEvents(jobId: string) {
           /* ignore malformed */
         }
       };
-      // EventSource also fires onerror when the server closes the stream;
-      // suppress the implicit reconnect for terminal jobs by closing here too.
       es.onerror = () => {
         const snapshot = queryClient.getQueryData<JobSnapshot>(["job", jobId]);
+        // Terminal job: the backend closed the stream cleanly. Suppress the
+        // implicit reconnect by closing here too — no error to surface.
         if (snapshot && TERMINAL.includes(snapshot.state)) {
           es?.close();
           es = null;
+          return;
+        }
+        // Non-terminal: the stream dropped mid-download. EventSource will retry
+        // on its own, but the UI would otherwise freeze silently — surface it.
+        if (!disconnected) {
+          disconnected = true;
+          toast.error("Lost connection — reconnecting…", {
+            id: sseToastId,
+            description: "Trying to reconnect to the download.",
+          });
         }
       };
     })();
     return () => {
       cancelled = true;
       es?.close();
+      toast.dismiss(sseToastId);
     };
   }, [jobId, queryClient]);
 }

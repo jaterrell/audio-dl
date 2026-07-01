@@ -22,7 +22,9 @@ export function EmptyStage({ latest }: EmptyStageProps) {
         <div className="text-[11px] uppercase tracking-[0.06em] font-bold text-[var(--text-2)] mb-2">
           Last added
         </div>
-        <h2 className="text-[22px] font-bold tracking-[-0.02em]">{latest.title ?? latest.url}</h2>
+        <h2 className="text-[22px] font-bold tracking-[-0.02em] truncate max-w-[80vw] mx-auto">
+          {latest.title ?? latest.url}
+        </h2>
         {latest.artist && <p className="text-[var(--text-2)] text-sm mt-1">{latest.artist}</p>}
       </div>
     </div>
