@@ -6,8 +6,13 @@ for Codex use.
 ## Layout
 
 - `audio_dl.py` is the CLI entry point; `main()` owns argument parsing.
-- `audio_dl_ui.py` is the optional FastAPI/uvicorn web UI and should keep UI
-  dependencies behind the `[ui]` extra.
+- `audio_dl_ui/` is the optional FastAPI/uvicorn web UI backend; all code
+  lives in `__init__.py`, and UI dependencies stay behind the `[ui]` extra.
+  `audio_dl_ui/static/` is build output (the compiled React bundle) — never
+  hand-edit it; regenerate with `scripts/build-web.sh`.
+- `web/` is the React 19 + TypeScript frontend (Vite, TanStack Router,
+  Tailwind v4, Vitest). `scripts/build-web.sh` builds it and copies
+  `web/dist/` into `audio_dl_ui/static/`, which the backend serves.
 - `_app_entry.py` is the PyInstaller shim used by the macOS `.app` bundle;
   it strips Finder argv and fixes `PATH` before calling `audio_dl_ui:main`.
 - `audio-dl.spec` and `scripts/build-app.sh` drive the `.app` build
@@ -16,7 +21,8 @@ for Codex use.
 - `requirements.txt` intentionally stays minimal; runtime CLI dependency is
   `yt-dlp`, with `ffmpeg` expected on `PATH` (the `.app` bundles ffmpeg via
   `imageio-ffmpeg`).
-- Tests live in `test_audio_dl.py` and `test_audio_dl_ui.py`.
+- Python tests live in `test_audio_dl.py` and `test_audio_dl_ui.py`;
+  frontend tests are co-located `*.test.tsx` files under `web/src/`.
 
 Important CLI seams:
 
@@ -46,8 +52,9 @@ Common checks:
 
 ```bash
 pytest -q
+(cd web && npm test)            # frontend (Vitest); run after web/ changes
 pylint $(git ls-files '*.py')
-python3 -m py_compile audio_dl.py audio_dl_ui.py
+python3 -m py_compile audio_dl.py audio_dl_ui/__init__.py
 python3 audio_dl.py --help
 audio-dl-ui --help
 ```
@@ -66,8 +73,9 @@ audio-dl-ui --help
   embedded art and leftover images would accumulate.
 - Keep credentials for gated content in the CLI path. The UI intentionally does
   not expose cookies or SoundCloud OAuth controls.
-- Keep the project as small top-level modules rather than introducing a package
-  layout or framework structure without a clear need.
+- Keep the CLI a single top-level module (`audio_dl.py`). The `audio_dl_ui`
+  package exists only so the built frontend ships inside the wheel — backend
+  code stays in its `__init__.py`; don't grow submodules without a clear need.
 
 ## Release Notes
 
