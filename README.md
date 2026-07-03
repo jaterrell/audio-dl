@@ -5,6 +5,8 @@
 
 Download high-quality audio (or video) from YouTube, SoundCloud, and any other site yt-dlp supports.
 
+**Site:** [jaterrell.github.io/audio-dl](https://jaterrell.github.io/audio-dl/)
+
 ## Intended use
 
 This tool is a frontend to [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) for **personal, non-commercial use**:

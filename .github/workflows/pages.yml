@@ -1,0 +1,42 @@
+name: Deploy site to GitHub Pages
+
+# Publishes site/ to GitHub Pages. This file is mirrored to the public
+# repo along with everything else; the repository guard means it only
+# deploys there (jaterrell.github.io/audio-dl), never from internal.
+#
+# Setup (one-time, public repo): Settings → Pages → Source = "GitHub
+# Actions" — or via API:
+#   gh api -X POST repos/jaterrell/audio-dl/pages -f build_type=workflow
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.repository == 'jaterrell/audio-dl'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload site/ as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
