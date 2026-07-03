@@ -74,6 +74,49 @@ class TestStaticFilesMount:
         assert b"<title>audio-dl</title>" in r.content
 
 
+class TestCsrfTokenInjection:
+    """index.html gets the CSRF token injected only for same-origin loopback."""
+
+    @pytest.fixture
+    def static_dir(self, tmp_path, monkeypatch):
+        # Give spa_or_static a real index.html to serve (the Vite build
+        # artifact isn't present in unit-test environments).
+        index = tmp_path / "index.html"
+        index.write_text(
+            "<!doctype html><html><head><title>audio-dl</title></head>"
+            "<body></body></html>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("audio_dl_ui._STATIC_DIR", str(tmp_path))
+        return tmp_path
+
+    def test_injects_token_for_loopback_client_and_host(self, static_dir):
+        c = TestClient(app, base_url="http://127.0.0.1:9000", client=("127.0.0.1", 5000))
+        r = c.get("/")
+        assert r.status_code == 200
+        assert 'meta name="csrf-token" content="test-token"' in r.text
+
+    def test_injects_on_spa_fallback_for_localhost(self, static_dir):
+        c = TestClient(app, base_url="http://localhost:9000", client=("::1", 5000))
+        r = c.get("/library")
+        assert r.status_code == 200
+        assert 'content="test-token"' in r.text
+
+    def test_no_injection_for_non_loopback_client(self, static_dir):
+        # --host 0.0.0.0 --allow-remote: a LAN client is not loopback.
+        c = TestClient(app, base_url="http://127.0.0.1:9000", client=("203.0.113.7", 5000))
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "csrf-token" not in r.text
+
+    def test_no_injection_for_dns_rebinding(self, static_dir):
+        # Loopback client address but attacker-controlled Host header.
+        c = TestClient(app, base_url="http://evil.example.com", client=("127.0.0.1", 5000))
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "csrf-token" not in r.text
+
+
 # ---------------------------------------------------------------------------
 # POST /jobs — validation
 # ---------------------------------------------------------------------------

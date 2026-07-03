@@ -41,7 +41,7 @@ from typing import Callable, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, FileResponse, Response
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 from audio_dl import (
@@ -1321,12 +1321,48 @@ if __name__ == "__main__":
 _STATIC_DIR = str(_importlib_files("audio_dl_ui") / "static")
 
 
+def _host_header_is_loopback(host_header: str) -> bool:
+    """True if the ``Host`` header names a loopback address (port ignored).
+
+    Guards CSRF-token injection against DNS rebinding: an attacker hostname
+    that resolves to 127.0.0.1 yields a loopback *client* address but carries
+    its own (non-loopback) ``Host`` header, so it must not receive the token.
+    """
+    host = (host_header or "").strip()
+    if not host:
+        return False
+    if host.startswith("["):  # bracketed IPv6, e.g. "[::1]:8000"
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:  # "host:port" (bare IPv6 always uses brackets)
+        host = host.rsplit(":", 1)[0]
+    return host in _LOOPBACK_HOSTS
+
+
+def _index_html_with_token(index_path: Path, token: str) -> str:
+    """Read index.html and inject ``<meta name="csrf-token">`` into <head>.
+
+    The token is ``secrets.token_urlsafe`` output (``[A-Za-z0-9_-]``), so it
+    carries no HTML-special characters.
+    """
+    html = index_path.read_text(encoding="utf-8")
+    meta = f'<meta name="csrf-token" content="{token}">'
+    if "</head>" in html:
+        return html.replace("</head>", f"{meta}</head>", 1)
+    return meta + html
+
+
 @app.get("/{full_path:path}", include_in_schema=False)
-async def spa_or_static(full_path: str) -> FileResponse:
+async def spa_or_static(full_path: str, request: Request) -> Response:
     """Serve static files when they exist; fall back to index.html for SPA routing.
 
     Path-traversal guard: rejects any path containing ``..`` segments or
     percent-encoded slashes (``%2F`` / ``%2f``) that could escape the static root.
+
+    When serving index.html to a same-origin loopback client, inject the
+    per-launch CSRF token so bare URLs (bookmarks, address-bar autocomplete)
+    and tabs that outlive an app relaunch can POST without a ``?token=`` param.
+    Gated on BOTH a loopback client address AND a loopback ``Host`` header so a
+    DNS-rebinding page (loopback client, attacker Host) never reads the token.
     """
     if ".." in full_path or "%2F" in full_path or "%2f" in full_path:
         raise HTTPException(status_code=404)
@@ -1335,5 +1371,16 @@ async def spa_or_static(full_path: str) -> FileResponse:
     if not candidate.is_relative_to(static_root):
         raise HTTPException(status_code=404)
     if full_path and candidate.is_file():
-        return FileResponse(str(candidate))
-    return FileResponse(str(static_root / "index.html"))
+        target = candidate
+    else:
+        target = static_root / "index.html"
+    if target.name == "index.html" and target.is_file():
+        token = getattr(request.app.state, "csrf_token", "") or ""
+        client_host = (request.client.host if request.client else "") or ""
+        if (
+            token
+            and client_host in _LOOPBACK_HOSTS
+            and _host_header_is_loopback(request.headers.get("host", ""))
+        ):
+            return HTMLResponse(_index_html_with_token(target, token))
+    return FileResponse(str(target))

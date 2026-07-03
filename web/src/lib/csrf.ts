@@ -2,6 +2,15 @@ let cached: string | null = null;
 
 export async function discoverCsrfToken(): Promise<string> {
   if (cached !== null) return cached;
+  // Prefer the token the loopback server injects into index.html — it survives
+  // bare-URL visits (no ?token=) and app relaunches (token rotates per launch).
+  const fromMeta = document
+    .querySelector('meta[name="csrf-token"]')
+    ?.getAttribute("content");
+  if (fromMeta) {
+    cached = fromMeta;
+    return fromMeta;
+  }
   const params = new URLSearchParams(window.location.search);
   const fromUrl = params.get("token");
   if (fromUrl) {

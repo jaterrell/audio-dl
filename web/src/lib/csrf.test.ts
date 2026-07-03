@@ -13,6 +13,13 @@ describe("discoverCsrfToken", () => {
     });
   }
 
+  function setMetaToken(token: string) {
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", "csrf-token");
+    meta.setAttribute("content", token);
+    document.head.appendChild(meta);
+  }
+
   beforeEach(() => {
     setLocation("");
     resetCsrfCache();
@@ -20,6 +27,18 @@ describe("discoverCsrfToken", () => {
 
   afterEach(() => {
     Object.defineProperty(window, "location", { writable: true, value: originalLocation });
+    for (const el of document.querySelectorAll('meta[name="csrf-token"]')) el.remove();
+  });
+
+  it("prefers the injected <meta name=csrf-token> over the URL param", async () => {
+    setMetaToken("from-meta");
+    setLocation("?token=from-url");
+    expect(await discoverCsrfToken()).toBe("from-meta");
+  });
+
+  it("falls back to ?token= when no meta tag is injected", async () => {
+    setLocation("?token=from-url");
+    expect(await discoverCsrfToken()).toBe("from-url");
   });
 
   it("returns token from URL ?token= when present", async () => {
