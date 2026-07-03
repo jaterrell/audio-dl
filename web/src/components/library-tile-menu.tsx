@@ -6,7 +6,7 @@ import {
   ContextMenuContent,
   ContextMenuItem,
 } from "./ui/context-menu";
-import { reveal, postJobs } from "@/lib/api";
+import { describeError, reveal, postJobs } from "@/lib/api";
 import type { HistoryItem } from "@/lib/types";
 import { toast } from "@/lib/toast-store";
 import { trackJob } from "@/lib/tracked-jobs";
@@ -22,8 +22,9 @@ export function LibraryTileMenu({ item, onRemove, children }: LibraryTileMenuPro
     if (!item.paths[0]) return;
     try {
       await reveal(item.paths[0]);
-    } catch {
-      toast.error("Couldn't reveal file");
+    } catch (err) {
+      const { title, description } = describeError(err, "Couldn't reveal file");
+      toast.error(title, { description });
     }
   }
   async function handleReDownload() {
@@ -32,8 +33,9 @@ export function LibraryTileMenu({ item, onRemove, children }: LibraryTileMenuPro
       // Track it so a JobTracker mounts (SSE progress, completion toast, history).
       trackJob(r.job_id);
       toast.success("Re-downloading…", { description: item.title ?? item.url });
-    } catch {
-      toast.error("Couldn't start re-download");
+    } catch (err) {
+      const { title, description } = describeError(err, "Couldn't start re-download");
+      toast.error(title, { description });
     }
   }
   return (

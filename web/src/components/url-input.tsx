@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "./ui/button";
 import { FormatPicker } from "./format-picker";
 import { useSettings } from "@/hooks/use-settings";
-import { postJobs } from "@/lib/api";
+import { describeError, postJobs } from "@/lib/api";
 import { toast } from "@/lib/toast-store";
 import { trackJob } from "@/lib/tracked-jobs";
 
@@ -20,20 +20,19 @@ export function UrlInput() {
     const urls = lines.map((url) => ({ url, format: settings.default_format }));
     setSubmitting(true);
     const plural = urls.length === 1 ? "" : "s";
-    const req = postJobs(urls);
-    toast.promise(req, {
-      loading: `Queueing ${urls.length} download${plural}…`,
-      // Count comes from the submission, not the response — POST /jobs
-      // returns only {"job_id"}.
-      success: `Queued ${urls.length} download${plural}`,
-      error: "Couldn't queue download",
-    });
+    // Manual toast lifecycle (not toast.promise) so a failure can carry the
+    // server's `detail` in the description — toast.promise sets a title only.
+    const id = toast.loading(`Queueing ${urls.length} download${plural}…`);
     try {
-      const r = await req;
+      const r = await postJobs(urls);
       trackJob(r.job_id);
       setValue("");
-    } catch {
-      /* surfaced by the toast above */
+      // Count comes from the submission, not the response — POST /jobs
+      // returns only {"job_id"}.
+      toast.success(`Queued ${urls.length} download${plural}`, { id });
+    } catch (err) {
+      const { title, description } = describeError(err, "Couldn't queue download");
+      toast.error(title, { id, description });
     } finally {
       setSubmitting(false);
     }

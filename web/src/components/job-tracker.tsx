@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useJobEvents } from "@/hooks/use-job-events";
 import { useHistory } from "@/hooks/use-history";
-import { reveal, postJobs } from "@/lib/api";
+import { describeError, reveal, postJobs } from "@/lib/api";
 import { toast } from "@/lib/toast-store";
 import { untrackJob } from "@/lib/tracked-jobs";
 import type { JobSnapshot } from "@/lib/types";
@@ -39,7 +39,10 @@ export function JobTracker({ jobId, onJobCreated }: { jobId: string; onJobCreate
             ? {
                 label: "Reveal",
                 onClick: () => {
-                  reveal(u.paths[0]).catch(() => toast.error("Couldn't reveal file"));
+                  reveal(u.paths[0]).catch((err) => {
+                    const { title, description } = describeError(err, "Couldn't reveal file");
+                    toast.error(title, { description });
+                  });
                 },
               }
             : undefined,
@@ -60,7 +63,10 @@ export function JobTracker({ jobId, onJobCreated }: { jobId: string; onJobCreate
                   onJobCreated?.(r.job_id);
                   toast.success("Re-downloading…", { description: u.title ?? u.url });
                 })
-                .catch(() => toast.error("Couldn't start re-download"));
+                .catch((err) => {
+                  const { title, description } = describeError(err, "Couldn't start re-download");
+                  toast.error(title, { description });
+                });
             },
           },
         });

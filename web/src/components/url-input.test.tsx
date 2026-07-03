@@ -87,4 +87,50 @@ describe("UrlInput toasts", () => {
     await user.click(screen.getByRole("button", { name: /add/i }));
     expect(await screen.findByText(/queued 1 download/i)).toBeInTheDocument();
   });
+
+  it("shows actionable session-expired copy on a 403 CSRF rejection", async () => {
+    server.use(
+      http.post("/jobs", () =>
+        HttpResponse.json({ detail: "Invalid CSRF token." }, { status: 403 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithToaster(<UrlInput />);
+    await user.type(screen.getByPlaceholderText(/paste a url/i), "https://x.test/a");
+    await user.click(screen.getByRole("button", { name: /add/i }));
+    expect(await screen.findByText(/session expired/i)).toBeInTheDocument();
+    expect(screen.getByText(/relaunch audio-dl/i)).toBeInTheDocument();
+  });
+
+  it("surfaces the server detail on a 400 rejection", async () => {
+    server.use(
+      http.post("/jobs", () =>
+        HttpResponse.json({ detail: "Unknown format: xyz." }, { status: 400 }),
+      ),
+    );
+    const user = userEvent.setup();
+    renderWithToaster(<UrlInput />);
+    await user.type(screen.getByPlaceholderText(/paste a url/i), "https://x.test/a");
+    await user.click(screen.getByRole("button", { name: /add/i }));
+    expect(await screen.findByText(/couldn't queue download/i)).toBeInTheDocument();
+    expect(screen.getByText(/unknown format: xyz\./i)).toBeInTheDocument();
+  });
+
+  it("shows distinct copy when the server is unreachable", async () => {
+    server.use(http.post("/jobs", () => HttpResponse.error()));
+    const user = userEvent.setup();
+    renderWithToaster(<UrlInput />);
+    await user.type(screen.getByPlaceholderText(/paste a url/i), "https://x.test/a");
+    await user.click(screen.getByRole("button", { name: /add/i }));
+    expect(await screen.findByText(/can't reach audio-dl/i)).toBeInTheDocument();
+  });
+
+  it("falls back to generic copy for an unrecognized failure (no detail)", async () => {
+    server.use(http.post("/jobs", () => new HttpResponse("boom", { status: 500 })));
+    const user = userEvent.setup();
+    renderWithToaster(<UrlInput />);
+    await user.type(screen.getByPlaceholderText(/paste a url/i), "https://x.test/a");
+    await user.click(screen.getByRole("button", { name: /add/i }));
+    expect(await screen.findByText(/couldn't queue download/i)).toBeInTheDocument();
+  });
 });
