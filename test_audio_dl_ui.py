@@ -795,6 +795,152 @@ class TestBindGuard:
         ui.main()  # should not raise
 
 
+# ---------------------------------------------------------------------------
+# Port-taken pre-flight (issue #44: relaunch while another instance holds the
+# port must NOT open a broken browser tab — bind is checked before the timer.)
+# ---------------------------------------------------------------------------
+
+class TestPortTakenPreflight:
+    def test_port_taken_surfaces_error_and_skips_browser(self, monkeypatch):
+        import socket as _socket
+        import sys
+
+        import audio_dl_ui as ui
+
+        # Simulate a prior instance holding the port: a real listening socket on
+        # an OS-assigned free port. All network stays local — no real server.
+        holder = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        holder.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
+        try:
+            opened: list[str] = []
+            ran: list[bool] = []
+            monkeypatch.setattr(ui.webbrowser, "open", opened.append)
+            monkeypatch.setattr(
+                ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: ran.append(True)})()
+            )
+            monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
+            monkeypatch.setattr(
+                sys, "argv",
+                ["audio-dl-ui", "--host", "127.0.0.1", "--port", str(port)],
+            )
+            with pytest.raises(SystemExit) as exc:
+                ui.main()
+            assert exc.value.code == 1
+            # Never opened a tab, never reached the (mocked) server start.
+            assert not opened
+            assert not ran
+        finally:
+            holder.close()
+
+    def test_free_port_passes_preflight(self, monkeypatch):
+        """Sanity: a bindable port returns None (normal launch proceeds)."""
+        import socket as _socket
+
+        import audio_dl_ui as ui
+
+        # Grab a free port then release it, so the pre-flight can rebind it.
+        probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        assert ui._port_bind_error("127.0.0.1", port) is None
+
+    def test_dual_stack_one_family_held_fails_preflight(self, monkeypatch):
+        """A host like ``localhost`` resolves to BOTH ::1 and 127.0.0.1, and
+        uvicorn binds a socket for every resolved address. If a prior instance
+        holds just ONE family, the pre-flight must still fail — probing only
+        the first (bindable) address would let issue #44 slip through.
+
+        We stub ``getaddrinfo`` to return a bindable address first and a held
+        address second, so a single-probe implementation would wrongly succeed.
+        """
+        import socket as _socket
+
+        import audio_dl_ui as ui
+
+        # Held family: a real listening socket on an OS-assigned free port.
+        held = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        held.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        held_port = held.getsockname()[1]
+
+        # Bindable family: a free port we release immediately.
+        free = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        free.bind(("127.0.0.1", 0))
+        free_port = free.getsockname()[1]
+        free.close()
+
+        try:
+            def fake_getaddrinfo(_host, _port, *_a, **_kw):
+                st = _socket.SOCK_STREAM
+                tcp = _socket.IPPROTO_TCP
+                # Bindable address FIRST, held address SECOND: a loop that
+                # returned on first success would miss the held one.
+                return [
+                    (_socket.AF_INET, st, tcp, "", ("127.0.0.1", free_port)),
+                    (_socket.AF_INET, st, tcp, "", ("127.0.0.1", held_port)),
+                ]
+
+            monkeypatch.setattr(ui.socket, "getaddrinfo", fake_getaddrinfo)
+            err = ui._port_bind_error("localhost", free_port)
+            assert err is not None
+            assert "cannot bind" in err
+        finally:
+            held.close()
+
+    def test_dual_stack_gap_skips_browser(self, monkeypatch):
+        """End-to-end: the dual-stack gap must not open a browser tab either."""
+        import socket as _socket
+        import sys
+
+        import audio_dl_ui as ui
+
+        held = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        held.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        held.bind(("127.0.0.1", 0))
+        held.listen(1)
+        held_port = held.getsockname()[1]
+
+        free = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        free.bind(("127.0.0.1", 0))
+        free_port = free.getsockname()[1]
+        free.close()
+
+        try:
+            opened: list[str] = []
+            ran: list[bool] = []
+
+            def fake_getaddrinfo(_host, _port, *_a, **_kw):
+                st = _socket.SOCK_STREAM
+                tcp = _socket.IPPROTO_TCP
+                return [
+                    (_socket.AF_INET, st, tcp, "", ("127.0.0.1", free_port)),
+                    (_socket.AF_INET, st, tcp, "", ("127.0.0.1", held_port)),
+                ]
+
+            monkeypatch.setattr(ui.socket, "getaddrinfo", fake_getaddrinfo)
+            monkeypatch.setattr(ui.webbrowser, "open", opened.append)
+            monkeypatch.setattr(
+                ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: ran.append(True)})()
+            )
+            monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
+            monkeypatch.setattr(
+                sys, "argv",
+                ["audio-dl-ui", "--host", "localhost", "--port", str(free_port)],
+            )
+            with pytest.raises(SystemExit) as exc:
+                ui.main()
+            assert exc.value.code == 1
+            assert not opened
+            assert not ran
+        finally:
+            held.close()
+
+
 class TestMaxParallelValidation:
     """`--max-parallel` rejects non-positive / out-of-range values at argparse
     time, rather than crashing later inside ThreadPoolExecutor."""

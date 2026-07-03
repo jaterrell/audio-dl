@@ -25,6 +25,7 @@ import os
 import queue
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1116,6 +1117,88 @@ def _check_dependencies_gui() -> None:
     sys.exit(1)
 
 
+def _port_bind_error(host: str, port: int) -> str | None:
+    """Pre-flight the server bind; return an error message if the port is taken.
+
+    ``uvicorn.run`` binds the port itself, but by the time it raises the 0.8s
+    browser-open timer has already fired and a Finder-launched user is staring
+    at a broken tab that carries the *dead* instance's CSRF token while the old
+    server keeps the port (issue #44). We probe the bind here — before the
+    timer starts — so we can fail loudly and skip opening the browser.
+
+    We set ``SO_REUSEADDR`` to match uvicorn's own socket options, so a stale
+    ``TIME_WAIT`` socket doesn't produce a false "already running". A currently
+    *listening* socket (a live prior instance) still yields ``EADDRINUSE`` on
+    every platform, which is exactly the case we want to catch. Each probe
+    socket is closed immediately, leaving the port free for uvicorn; a tiny
+    TOCTOU window remains (another process could grab it in between), which
+    uvicorn's own ``OSError`` handler in :func:`main` still covers.
+
+    A host like ``localhost`` can resolve to BOTH ``::1`` and ``127.0.0.1``;
+    asyncio/uvicorn binds a socket for EVERY address ``getaddrinfo`` returns.
+    So we must probe them ALL and fail if ANY is taken — otherwise a prior
+    instance holding just one family (e.g. IPv4) would slip past a probe that
+    only tried the other (issue #44). We set ``IPV6_V6ONLY`` on the IPv6 probe
+    (mirroring asyncio) so a ``::`` bind doesn't also cover IPv4 and mask a
+    held v4 address.
+
+    Returns ``None`` only when EVERY resolved address is bindable, else a
+    human-readable reason for the first address that fails.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        return f"cannot resolve host {host!r}: {exc}"
+
+    seen: set = set()
+    for family, socktype, proto, _canonname, sockaddr in infos:
+        if sockaddr in seen:  # dedup identical (addr, port) tuples
+            continue
+        seen.add(sockaddr)
+        sock = socket.socket(family, socktype, proto)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock.bind(sockaddr)
+        except OSError as exc:
+            return f"cannot bind {host}:{port} — {exc}"
+        finally:
+            sock.close()
+
+    return None  # every resolved address is bindable
+
+
+def _preflight_or_exit(host: str, port: int) -> None:
+    """Pre-flight the port bind and abort loudly (no browser tab) if it's taken.
+
+    Called BEFORE ``main()`` arms the browser-open timer: if a prior audio-dl
+    instance already holds the port, ``uvicorn.run`` would exit on bind but the
+    timer would have opened a broken tab carrying this dead instance's CSRF
+    token (issue #44). On failure we surface the reason the same way the
+    missing-dependency pre-flight does — native dialog on a Finder-launched
+    ``.app`` (no TTY), stderr elsewhere — then ``sys.exit(1)``. Returns normally
+    when the port is bindable.
+    """
+    bind_error = _port_bind_error(host, port)
+    if bind_error is None:
+        return
+
+    message = (
+        "audio-dl can't start — the port is already in use:\n\n"
+        f"{bind_error}\n\n"
+        "audio-dl may already be running. Use the existing window, or quit "
+        "the other instance before relaunching."
+    )
+    no_tty = not (sys.stderr and sys.stderr.isatty())
+    if no_tty and sys.platform == "darwin" and _show_macos_dialog(
+        "audio-dl — already running", message
+    ):
+        sys.exit(1)
+    print(f"ERROR: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1201,6 +1284,13 @@ def main():
     _GLOBAL_EXECUTOR = ThreadPoolExecutor(
         max_workers=args.max_parallel, thread_name_prefix="audio-dl-worker"
     )
+
+    # Pre-flight the port bind BEFORE arming the browser timer. If a previous
+    # audio-dl instance already holds the port, uvicorn.run below would exit on
+    # bind — but the 0.8s timer would have already opened a broken tab carrying
+    # this dead instance's CSRF token (issue #44). _preflight_or_exit fails
+    # loudly here instead (dialog on a Finder .app, stderr elsewhere).
+    _preflight_or_exit(args.host, args.port)
 
     if not args.no_browser:
         # 0.0.0.0 / :: are bind-all addresses, not routable from a browser.
