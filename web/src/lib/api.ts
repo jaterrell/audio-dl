@@ -1,4 +1,4 @@
-import { discoverCsrfToken } from "./csrf";
+import { discoverCsrfToken, refreshCsrfTokenFromRoot } from "./csrf";
 import type { Format, VersionInfo } from "./types";
 
 /**
@@ -72,11 +72,41 @@ export function describeError(err: unknown, fallbackTitle: string): FailureCopy 
   return { title: fallbackTitle };
 }
 
-async function csrfHeaders(): Promise<HeadersInit> {
-  const token = await discoverCsrfToken();
+/** Build the JSON + CSRF headers carrying the given token. */
+function csrfHeaders(token: string): HeadersInit {
   return token
     ? { "X-Audio-DL-Token": token, "Content-Type": "application/json" }
     : { "Content-Type": "application/json" };
+}
+
+/**
+ * Send a guarded request, recovering once from a stale CSRF token.
+ *
+ * A tab open across an app relaunch (no reload) carries the previous launch's
+ * token and 403s against the new server. On a 403 we force-refresh the token
+ * from a fresh `GET /` (the loopback server injects the current one) and, if
+ * that yields a token different from the one THIS request actually sent, retry
+ * exactly once. Bounded to a single retry — if the refreshed token is still
+ * rejected the second 403 is returned to the caller, so there is no retry loop.
+ *
+ * The retry decision compares against `sentToken` — the value captured for this
+ * request — not a re-read of the shared cache. Two guarded requests can leave a
+ * stale tab concurrently; the first 403 handler refreshes the module cache, so
+ * a re-read would make the second request see an already-fresh token, conclude
+ * "unchanged", and skip the retry it still needs. Capturing the sent token per
+ * request lets every concurrent stale request recover.
+ */
+async function csrfFetch(input: string, init: RequestInit): Promise<Response> {
+  let sentToken = "";
+  const send = async () => {
+    sentToken = await discoverCsrfToken();
+    return fetch(input, { ...init, headers: csrfHeaders(sentToken) });
+  };
+  const r = await send();
+  if (r.status !== 403) return r;
+  const fresh = await refreshCsrfTokenFromRoot();
+  if (fresh && fresh !== sentToken) return send();
+  return r;
 }
 
 export async function getVersion(): Promise<VersionInfo> {
@@ -101,9 +131,8 @@ export interface PostJobsRequest {
 }
 
 export async function postJobs(urls: PostJobsRequest[]): Promise<{ job_id: string }> {
-  const r = await fetch("/jobs", {
+  const r = await csrfFetch("/jobs", {
     method: "POST",
-    headers: await csrfHeaders(),
     body: JSON.stringify({ urls }),
   });
   if (!r.ok) throw await toApiError(r);
@@ -111,18 +140,16 @@ export async function postJobs(urls: PostJobsRequest[]): Promise<{ job_id: strin
 }
 
 export async function cancelJob(jobId: string): Promise<{ cancelled: boolean }> {
-  const r = await fetch(`/jobs/${jobId}/cancel`, {
+  const r = await csrfFetch(`/jobs/${jobId}/cancel`, {
     method: "POST",
-    headers: await csrfHeaders(),
   });
   if (!r.ok) throw await toApiError(r);
   return r.json();
 }
 
 export async function reveal(path: string): Promise<{ ok: boolean }> {
-  const r = await fetch("/reveal", {
+  const r = await csrfFetch("/reveal", {
     method: "POST",
-    headers: await csrfHeaders(),
     body: JSON.stringify({ path }),
   });
   if (!r.ok) throw await toApiError(r);

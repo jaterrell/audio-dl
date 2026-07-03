@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { server } from "@/test-utils/server";
 import { http, HttpResponse } from "msw";
-import { discoverCsrfToken, resetCsrfCache } from "./csrf";
+import { discoverCsrfToken, refreshCsrfTokenFromRoot, resetCsrfCache } from "./csrf";
 
 describe("discoverCsrfToken", () => {
   const originalLocation = window.location;
@@ -54,5 +54,54 @@ describe("discoverCsrfToken", () => {
   it("returns empty string if neither source has a token", async () => {
     server.use(http.get("/api/csrf", () => HttpResponse.json({}, { status: 404 })));
     expect(await discoverCsrfToken()).toBe("");
+  });
+});
+
+describe("refreshCsrfTokenFromRoot", () => {
+  beforeEach(() => {
+    resetCsrfCache();
+  });
+
+  function htmlWithToken(token: string): string {
+    return `<!doctype html><html><head><meta name="csrf-token" content="${token}"></head><body></body></html>`;
+  }
+
+  it("re-fetches / and returns the current injected token", async () => {
+    server.use(
+      http.get("/", () =>
+        new HttpResponse(htmlWithToken("fresh-token"), {
+          headers: { "Content-Type": "text/html" },
+        }),
+      ),
+    );
+    expect(await refreshCsrfTokenFromRoot()).toBe("fresh-token");
+  });
+
+  it("replaces the cache so discoverCsrfToken hands back the fresh token", async () => {
+    server.use(
+      http.get("/", () =>
+        new HttpResponse(htmlWithToken("rotated"), {
+          headers: { "Content-Type": "text/html" },
+        }),
+      ),
+    );
+    await refreshCsrfTokenFromRoot();
+    expect(await discoverCsrfToken()).toBe("rotated");
+  });
+
+  it("returns null when the fresh HTML has no meta token", async () => {
+    server.use(
+      http.get("/", () =>
+        new HttpResponse("<!doctype html><html><head></head><body></body></html>", {
+          headers: { "Content-Type": "text/html" },
+        }),
+      ),
+    );
+    expect(await refreshCsrfTokenFromRoot()).toBeNull();
+  });
+
+  it("returns null on a non-ok response", async () => {
+    server.use(http.get("/", () => new HttpResponse("nope", { status: 500 })));
+    expect(await refreshCsrfTokenFromRoot()).toBeNull();
   });
 });
