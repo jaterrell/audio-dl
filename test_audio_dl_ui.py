@@ -2629,3 +2629,212 @@ class TestSelfcheck:
         self._patch(monkeypatch, tmp_path, deps=["ffmpeg is not installed or not on PATH."])
         problems = audio_dl_ui._selfcheck_problems()
         assert any("ffmpeg" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
+# Browser presence + auto-shutdown (v2.4) — closing every UI window must shut
+# the server down instead of leaving it running in the background forever
+# (which also made the next launch die on "address already in use").
+# ---------------------------------------------------------------------------
+
+
+class TestPresenceAutoShutdown:
+
+    @pytest.fixture(autouse=True)
+    def _fresh_presence(self):
+        import audio_dl_ui as ui
+        ui._presence_reset()
+        yield
+        ui._presence_reset()
+
+    @staticmethod
+    def _arm_and_disconnect(ui):
+        """Simulate one browser that connected and then closed its window."""
+        ui._presence_connect()
+        ui._presence_disconnect()
+
+    # -- endpoint --
+
+    def test_presence_requires_csrf(self):
+        r = client.get("/presence")
+        assert r.status_code == 403
+
+    def test_presence_stream_counts_connections(self):
+        """Opening the stream registers a browser; closing it (the finally
+        block) unregisters and stamps last_disconnect. Generator-level for
+        the same reason as test_subscriber_unregistered_on_disconnect."""
+        import asyncio
+        import audio_dl_ui as ui
+
+        async def open_and_close():
+            gen = ui._presence_iter()
+            first = await gen.__anext__()
+            assert "presence" in first
+            assert ui._PRESENCE.connected == 1
+            assert ui._PRESENCE.ever_connected
+            await gen.aclose()
+
+        asyncio.run(open_and_close())
+        assert ui._PRESENCE.connected == 0
+        assert ui._PRESENCE.ever_connected, "arming must survive disconnect"
+        assert ui._PRESENCE.last_disconnect > 0
+
+    def test_presence_disconnect_never_goes_negative(self):
+        import audio_dl_ui as ui
+        ui._presence_disconnect()
+        assert ui._PRESENCE.connected == 0
+
+    # -- decision logic --
+
+    def test_never_shuts_down_before_first_browser_connects(self):
+        """--no-browser launches idle forever until a UI actually opens."""
+        import audio_dl_ui as ui
+        assert not ui._should_auto_shutdown(now=time.monotonic() + 10_000)
+
+    def test_connected_browser_blocks_shutdown(self):
+        import audio_dl_ui as ui
+        ui._presence_connect()
+        assert not ui._should_auto_shutdown(now=time.monotonic() + 10_000)
+
+    def test_grace_period_respected(self):
+        """A reload/navigation gap shorter than the grace must not kill the
+        server; past the grace with no jobs it must."""
+        import audio_dl_ui as ui
+        self._arm_and_disconnect(ui)
+        t0 = ui._PRESENCE.last_disconnect
+        assert not ui._should_auto_shutdown(now=t0 + ui._SHUTDOWN_GRACE_SECONDS / 2)
+        assert ui._should_auto_shutdown(now=t0 + ui._SHUTDOWN_GRACE_SECONDS + 1)
+
+    def test_reconnect_resets_the_clock(self):
+        """Browser comes back within the grace: no shutdown, and the next
+        disconnect starts a fresh grace period."""
+        import audio_dl_ui as ui
+        self._arm_and_disconnect(ui)
+        ui._presence_connect()
+        assert not ui._should_auto_shutdown(now=time.monotonic() + 10_000)
+        ui._presence_disconnect()
+        assert not ui._should_auto_shutdown(
+            now=ui._PRESENCE.last_disconnect + ui._SHUTDOWN_GRACE_SECONDS / 2
+        )
+
+    def test_active_download_blocks_shutdown(self):
+        """Closing the browser mid-download lets the download finish first."""
+        import audio_dl_ui as ui
+        self._arm_and_disconnect(ui)
+        deadline = ui._PRESENCE.last_disconnect + ui._SHUTDOWN_GRACE_SECONDS + 1
+        job = JobState(
+            id="presence-test-job", media_format="mp3", output_dir="/tmp",
+            playlist=False, force=False, fragments=4,
+            url_states={},
+        )
+        JOBS[job.id] = job
+        try:
+            assert not ui._should_auto_shutdown(now=deadline)
+            job.completed = True
+            assert ui._should_auto_shutdown(now=deadline)
+        finally:
+            JOBS.pop(job.id, None)
+
+    # -- watchdog thread --
+
+    def test_watchdog_fires_trigger_once_conditions_met(self):
+        import audio_dl_ui as ui
+        self._arm_and_disconnect(ui)
+        ui._PRESENCE.last_disconnect -= ui._SHUTDOWN_GRACE_SECONDS + 1
+        fired = threading.Event()
+        stop = threading.Event()
+        t = threading.Thread(
+            target=ui._shutdown_watchdog, args=(stop, fired.set, 0.01), daemon=True
+        )
+        t.start()
+        assert fired.wait(timeout=5), "watchdog did not trigger shutdown"
+        t.join(timeout=5)
+        assert not t.is_alive(), "watchdog must exit after triggering"
+
+    def test_watchdog_stop_event_prevents_trigger(self):
+        """The stop event (set when the server loop returns) kills the
+        watchdog so it can never signal an unrelated process state."""
+        import audio_dl_ui as ui
+        self._arm_and_disconnect(ui)
+        ui._PRESENCE.last_disconnect -= ui._SHUTDOWN_GRACE_SECONDS + 1
+        fired = threading.Event()
+        stop = threading.Event()
+        stop.set()
+        t = threading.Thread(
+            target=ui._shutdown_watchdog, args=(stop, fired.set, 0.01), daemon=True
+        )
+        t.start()
+        t.join(timeout=5)
+        assert not t.is_alive()
+        assert not fired.is_set()
+
+    # -- enablement policy --
+
+    def test_enabled_by_default(self):
+        import audio_dl_ui as ui
+        assert ui._auto_shutdown_enabled(no_auto_shutdown=False, allow_remote=False)
+
+    def test_flag_disables(self):
+        import audio_dl_ui as ui
+        assert not ui._auto_shutdown_enabled(no_auto_shutdown=True, allow_remote=False)
+
+    def test_allow_remote_disables(self):
+        """A LAN/shared server's lifetime shouldn't track one client's
+        flaky connection."""
+        import audio_dl_ui as ui
+        assert not ui._auto_shutdown_enabled(no_auto_shutdown=False, allow_remote=True)
+
+    def test_dev_mode_disables(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setenv("AUDIO_DL_DEV", "1")
+        _refresh_dev_mode()
+        try:
+            assert not ui._auto_shutdown_enabled(no_auto_shutdown=False, allow_remote=False)
+        finally:
+            monkeypatch.delenv("AUDIO_DL_DEV")
+            _refresh_dev_mode()
+
+    # -- main() wiring --
+
+    @staticmethod
+    def _run_main(monkeypatch, argv_extra):
+        import sys
+        import audio_dl_ui as ui
+        started: list = []
+        real_thread = threading.Thread
+
+        class RecordingThread(real_thread):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                if kw.get("name") == "audio-dl-shutdown-watchdog":
+                    started.append(self)
+
+            def start(self):
+                # Never actually run the watchdog in tests — recording that
+                # main() asked for it is the contract under test.
+                if self in started:
+                    return
+                super().start()
+
+        monkeypatch.setattr(ui.threading, "Thread", RecordingThread)
+        monkeypatch.setattr(ui, "uvicorn", type("X", (), {"run": lambda *a, **kw: None})())
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
+        monkeypatch.setattr(
+            sys, "argv", ["audio-dl-ui", "--host", "127.0.0.1", "--no-browser", *argv_extra]
+        )
+        ui.main()
+        return started
+
+    def test_main_starts_watchdog_by_default(self, monkeypatch):
+        assert len(self._run_main(monkeypatch, [])) == 1
+
+    def test_main_respects_no_auto_shutdown(self, monkeypatch):
+        assert not self._run_main(monkeypatch, ["--no-auto-shutdown"])
+
+    def test_main_resets_presence_state(self, monkeypatch):
+        """A relaunch (or a test that armed presence earlier) must not start
+        life with an already-armed watchdog."""
+        import audio_dl_ui as ui
+        self._arm_and_disconnect(ui)
+        self._run_main(monkeypatch, ["--no-auto-shutdown"])
+        assert not ui._PRESENCE.ever_connected

@@ -11,6 +11,7 @@ export default defineConfig({
       "/jobs": { target: "http://localhost:9000", changeOrigin: true, ws: false },
       "/thumbs": "http://localhost:9000",
       "/reveal": "http://localhost:9000",
+      "/presence": { target: "http://localhost:9000", changeOrigin: true, ws: false },
     },
   },
   resolve: { alias: { "@": "/src" } },

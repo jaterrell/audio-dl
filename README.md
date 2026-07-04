@@ -74,7 +74,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The Vite proxy forwards `/api`, `/jobs`, `/thumbs`, `/reveal` to the backend.
+Open http://localhost:5173. The Vite proxy forwards `/api`, `/jobs`, `/thumbs`, `/reveal`, `/presence` to the backend.
 
 ### Production
 
@@ -82,6 +82,12 @@ Open http://localhost:5173. The Vite proxy forwards `/api`, `/jobs`, `/thumbs`, 
 ./scripts/build-web.sh   # produces audio_dl_ui/static/
 audio-dl-ui              # serves the built bundle
 ```
+
+The server exits on its own ~10 seconds after the last browser window
+closes (active downloads always finish first), so closing the UI doesn't
+leave a stray process holding the port. Pass `--no-auto-shutdown` to keep
+it running headless; `--allow-remote` and dev mode (`AUDIO_DL_DEV=1`)
+disable auto-shutdown automatically.
 
 ## macOS `.app` bundle
 

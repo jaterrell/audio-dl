@@ -3,6 +3,7 @@ import { Toaster } from "@/components/toaster";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { JobTracker } from "@/components/job-tracker";
 import { useTheme } from "@/hooks/use-theme";
+import { usePresence } from "@/hooks/use-presence";
 import { useTrackedJobs, trackJob } from "@/lib/tracked-jobs";
 
 export const Route = createRootRoute({
@@ -11,6 +12,9 @@ export const Route = createRootRoute({
 
 function AppShell() {
   useTheme();
+  // Tells the backend a window is open; when all windows close, the backend
+  // auto-exits instead of lingering in the background.
+  usePresence();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const tracked = useTrackedJobs();
   return (

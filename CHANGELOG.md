@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.4.0 — The server now quits when you close the browser
+
+Closing the last web-UI window used to leave the server (or the whole `.app`) running in the background forever — invisible until the next launch died with "address already in use". The UI now holds a lightweight presence connection per tab, and the server shuts itself down cleanly once every window has been closed for ~10 seconds. Downloads in flight always finish first, reloads and navigation don't count as closing, and a fresh launch takes over the port like you'd expect.
+
+### Added
+- Browser-presence auto-shutdown: the server exits ~10s after the last UI window closes, once active downloads finish. Armed only after a browser first connects, so `--no-browser` launches wait indefinitely for you to open the UI.
+- `--no-auto-shutdown` flag to opt back into a long-lived server. Auto-shutdown is also disabled automatically with `--allow-remote` (shared/LAN servers) and in dev mode (`AUDIO_DL_DEV=1`).
+
 ## v2.3.0 — Public landing page, and web-UI startup & CSRF reliability
 
 A public-facing release: the project now has a GitHub Pages landing site on the public repo. On the app side, a cluster of web-UI reliability fixes — relaunching while an instance is already running no longer opens a broken browser tab, CSRF handling now survives loopback clients and server restarts, and errors from the server show their actual detail instead of a generic toast.

@@ -25,6 +25,7 @@ import os
 import queue
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -871,6 +872,144 @@ async def cancel_job(job_id: str, _csrf: str = Depends(_require_csrf)) -> dict: 
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Browser presence + auto-shutdown
+#
+# The server's lifetime is tied to the browser windows viewing it: the SPA
+# holds one SSE connection to GET /presence per tab, and a watchdog thread
+# (started by main() unless disabled) exits the server once every window has
+# been closed for a grace period AND no downloads are running. Without this,
+# closing the browser left uvicorn (or the whole .app) running forever and
+# the next launch died on "address already in use".
+# ---------------------------------------------------------------------------
+
+# Seconds all browsers must stay disconnected before shutdown. Must comfortably
+# exceed EventSource's auto-reconnect delay (~3s) so reloads, SPA navigations,
+# and dev-server restarts never kill the server.
+_SHUTDOWN_GRACE_SECONDS = 10.0
+
+
+@dataclass
+class _Presence:
+    """Connected-browser bookkeeping for the auto-shutdown watchdog.
+
+    ``ever_connected`` arms the watchdog: a ``--no-browser`` launch idles
+    forever until a browser actually connects once. ``last_disconnect`` is
+    ``time.monotonic()`` at the moment the count last hit zero — on macOS the
+    monotonic clock pauses during sleep, so a closed laptop doesn't burn
+    through the grace period.
+    """
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    connected: int = 0
+    ever_connected: bool = False
+    last_disconnect: float = 0.0
+
+
+_PRESENCE = _Presence()
+
+
+def _presence_reset() -> None:
+    """Fresh presence state. Called by main() so relaunches (and tests that
+    invoke main()) never inherit an armed watchdog from earlier activity."""
+    global _PRESENCE  # pylint: disable=global-statement
+    _PRESENCE = _Presence()
+
+
+def _presence_connect() -> None:
+    with _PRESENCE.lock:
+        _PRESENCE.connected += 1
+        _PRESENCE.ever_connected = True
+
+
+def _presence_disconnect() -> None:
+    with _PRESENCE.lock:
+        _PRESENCE.connected = max(0, _PRESENCE.connected - 1)
+        if _PRESENCE.connected == 0:
+            _PRESENCE.last_disconnect = time.monotonic()
+
+
+def _jobs_active() -> bool:
+    """True while any download job hasn't reached job_completed."""
+    return any(not job.completed for job in JOBS.values())
+
+
+def _should_auto_shutdown(now: float | None = None) -> bool:
+    """Decision seam for the watchdog: shut down only when a browser has
+    connected at least once, none are connected now, the grace period has
+    fully elapsed, and no downloads are in flight (closing the browser
+    mid-download lets the download finish, then exits)."""
+    if now is None:
+        now = time.monotonic()
+    with _PRESENCE.lock:
+        if not _PRESENCE.ever_connected or _PRESENCE.connected > 0:
+            return False
+        idle = now - _PRESENCE.last_disconnect
+    if idle < _SHUTDOWN_GRACE_SECONDS:
+        return False
+    return not _jobs_active()
+
+
+async def _presence_iter():
+    """SSE generator whose open connection *is* the signal — no payload
+    matters. Periodic keepalives flush through dead TCP connections (e.g.
+    after system sleep) so the disconnect is noticed promptly."""
+    _presence_connect()
+    try:
+        yield 'data: {"type": "presence"}\n\n'
+        while True:
+            await asyncio.sleep(15.0)
+            yield ": keepalive\n\n"
+    finally:
+        _presence_disconnect()
+
+
+@app.get("/presence")
+async def presence(_csrf: str = Depends(_require_csrf)) -> StreamingResponse:  # pylint: disable=unused-argument
+    """Browser-presence stream. Each open UI tab holds one of these; the
+    auto-shutdown watchdog exits the server when all of them close."""
+    return StreamingResponse(
+        _presence_iter(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _shutdown_watchdog(
+    stop: threading.Event,
+    trigger: Callable[[], None],
+    interval: float = 1.0,
+) -> None:
+    """Poll the shutdown decision until it fires or ``stop`` is set.
+
+    ``stop`` is set by main() when the server loop returns, so stray watchdog
+    threads (e.g. from tests that stub the server) can't outlive their launch
+    and signal an unrelated process state.
+    """
+    while not stop.wait(interval):
+        if _should_auto_shutdown():
+            print(
+                "audio-dl-ui: no browser connected for "
+                f"{int(_SHUTDOWN_GRACE_SECONDS)}s and no active downloads — "
+                "shutting down. Relaunch audio-dl-ui (or pass "
+                "--no-auto-shutdown) to keep the server running."
+            )
+            trigger()
+            return
+
+
+def _auto_shutdown_enabled(no_auto_shutdown: bool, allow_remote: bool) -> bool:
+    """Auto-shutdown is on by default for the local-app use case, off when:
+
+    - ``--no-auto-shutdown`` asks for a long-lived server explicitly;
+    - ``--allow-remote`` implies a shared/LAN server whose lifetime shouldn't
+      track any single client's flaky connection;
+    - dev mode (``AUDIO_DL_DEV=1``), where the Vite frontend restarts freely
+      and the backend should stay up.
+    """
+    return not (no_auto_shutdown or allow_remote or _DEV_MODE)
+
+
 @app.get("/jobs/{job_id}/thumb/{url_idx}.jpg")
 async def get_thumbnail(
     job_id: str,
@@ -1203,7 +1342,7 @@ def _preflight_or_exit(host: str, port: int) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def main():
+def main():  # pylint: disable=too-many-statements
     """Parse args and run the uvicorn server."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -1215,6 +1354,13 @@ def main():
         help="Default output directory shown in the form (default: ~/Downloads/audio-dl).",
     )
     parser.add_argument("--no-browser", action="store_true", help="Do not auto-open the browser.")
+    parser.add_argument(
+        "--no-auto-shutdown", action="store_true",
+        help="Keep the server running after every browser window closes. "
+             "By default the server exits ~10s after the last UI tab "
+             "disconnects (once downloads finish). Implied by --allow-remote "
+             "and by dev mode (AUDIO_DL_DEV=1).",
+    )
     parser.add_argument(
         "--selfcheck", action="store_true",
         help="Verify the bundle has everything downloads need (ffmpeg, yt-dlp, "
@@ -1299,6 +1445,22 @@ def main():
         launch_url = f"http://{browser_host}:{args.port}/?token={app.state.csrf_token}"
         threading.Timer(0.8, lambda: webbrowser.open(launch_url)).start()
 
+    # Tie server lifetime to the browser: once a UI tab has connected, exit
+    # when they've all been closed for the grace period and downloads are
+    # done. SIGINT rides uvicorn's own signal handler, so shutdown is exactly
+    # as graceful as Ctrl-C. The stop event kills the watchdog when the
+    # server loop returns (tests stub uvicorn.run, so without it stray
+    # watchdog threads would accumulate across main() calls).
+    _presence_reset()
+    watchdog_stop = threading.Event()
+    if _auto_shutdown_enabled(args.no_auto_shutdown, args.allow_remote):
+        threading.Thread(
+            target=_shutdown_watchdog,
+            args=(watchdog_stop, lambda: signal.raise_signal(signal.SIGINT)),
+            daemon=True,
+            name="audio-dl-shutdown-watchdog",
+        ).start()
+
     global uvicorn  # pylint: disable=global-statement
     if uvicorn is None:
         import uvicorn as _uvicorn  # pylint: disable=import-outside-toplevel
@@ -1308,6 +1470,8 @@ def main():
     except OSError as e:
         print(f"ERROR: cannot bind {args.host}:{args.port} — {e}")
         sys.exit(1)
+    finally:
+        watchdog_stop.set()
 
 
 if __name__ == "__main__":
