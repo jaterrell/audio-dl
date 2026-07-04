@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.3.0 — Public landing page, and web-UI startup & CSRF reliability
+
+A public-facing release: the project now has a GitHub Pages landing site on the public repo. On the app side, a cluster of web-UI reliability fixes — relaunching while an instance is already running no longer opens a broken browser tab, CSRF handling now survives loopback clients and server restarts, and errors from the server show their actual detail instead of a generic toast.
+
+### Added
+- GitHub Pages landing site for the public repo. (#53)
+
+### Fixed
+- Relaunching audio-dl while another instance holds the port no longer opens a dead browser tab — the port bind is pre-flighted and the conflict is surfaced (native dialog from the `.app`, stderr from a terminal) before any tab opens. (#47, fixes #44)
+- Queue, cancel, and reveal failures now show the server's actual error detail in their toasts instead of a generic message. (#48)
+- The CSRF token is injected into `index.html` for loopback clients, so the web UI works without carrying the token in the URL. (#49)
+- A stale CSRF token (e.g. after the server restarts) now recovers automatically: a 403 triggers a one-shot token refresh and retry instead of failing the action. (#51)
+
 ## v2.2.0 — Light & dark themes, a colorful Now Playing, and a more reliable web UI
 
 The biggest web-UI release since the v2.0 rewrite. The interface now ships light, dark, and system theme modes — a toggle in the header, remembered across launches, with no flash of the wrong theme on load. The "Now Playing" view is genuinely colorful: the current track's album art tints the UI on a refined indigo/violet base, crossfading between tracks and contrast-clamped so text stays legible in either theme. Under the hood the album-art color engine was rewritten — replacing the 136 KB `node-vibrant` dependency that loaded on every download with a ~2 KB built-in extractor — and a cluster of reliability and polish gaps were closed.
