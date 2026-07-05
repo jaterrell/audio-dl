@@ -2758,14 +2758,14 @@ git commit -m "feat(web): mount RelatedStrip under the hero stage and on the idl
 
 - [ ] **Step 1: Bump versions**
 
-In `audio_dl.py`: `__version__ = "2.4.0"`. In `pyproject.toml`: `version = "2.4.0"`. (Dual-sourced by convention; `/release-helper` checks both. Originally targeted 2.3.0, but v2.3.0 shipped on 2026-07-03 as the landing-page/CSRF release — amended 2026-07-04.)
+In `audio_dl.py`: `__version__ = "2.5.0"`. In `pyproject.toml`: `version = "2.5.0"`. (Dual-sourced by convention; `/release-helper` checks both. Originally targeted 2.3.0, then briefly 2.4.0 — but v2.3.0 shipped 2026-07-03 (landing-page/CSRF) and v2.4.0 shipped as the auto-shutdown release (#56), so this feature is v2.5.0 — amended 2026-07-05.)
 
 - [ ] **Step 2: CHANGELOG entry**
 
 Add at the top of `CHANGELOG.md`:
 
 ```markdown
-## v2.4 — Related-content discovery ("More like this")
+## v2.5 — Related-content discovery ("More like this")
 
 - While a download runs, the web UI now discovers related tracks on
   YouTube (Mix radio) and SoundCloud (recommended + cross-platform artist
@@ -2795,7 +2795,7 @@ Expected: everything green.
 
 ```bash
 git add audio_dl.py pyproject.toml CHANGELOG.md CLAUDE.md
-git commit -m "chore: v2.4.0 — related-content discovery release notes + docs"
+git commit -m "chore: v2.5.0 — related-content discovery release notes + docs"
 ```
 
 ---

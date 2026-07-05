@@ -1,11 +1,15 @@
 # audio-dl Backend Modernization — Evolve-in-Place, SaaS-Shaped (design spec)
 
-**Status:** draft — planning only; implementation is HELD until the
-related-content feature brainstorm concludes (see [Roadmap
-robustness](#roadmap-robustness))
-**Date:** 2026-07-01
+**Status:** ACTIVE (unblocked 2026-07-04) — the related-content feature
+brainstorm concluded (see [Amendment (2026-07-04)](#amendment-2026-07-04-brainstorm-concluded--program-unblocked)).
+Implementation is gated on the related-content plan landing first; see
+that amendment for the sequencing gate.
+**Date:** 2026-07-01 (amended 2026-07-04)
 **Owner:** Joe Terrell
-**Target release:** v2.3.x program (multiple PRs)
+**Target release:** v2.6.x program (multiple PRs; v2.4.0 already shipped
+the auto-shutdown work (#56) and v2.5.0 is claimed by the related-content
+feature that lands first, so this program's first increment lands no
+earlier than v2.6.0)
 
 ## Purpose
 
@@ -55,17 +59,31 @@ synthesis with every critic finding addressed.
 ## Amendment (2026-07-04): brainstorm concluded — program unblocked
 
 The feature brainstorm this program was holding for has concluded: the
-related-content feature was designed and planned independently
+related-content feature was **designed and planned** independently
 ([design](2026-07-01-related-content-discovery-design.md),
 [plan](../plans/2026-07-03-related-content-discovery.md), merged via
 PRs #42/#52/#55) — and it chose a **different design** than this spec's
-increment 7 / worked example. Reconciliation:
+increment 7 / worked example. Note the merged PRs landed **docs only**:
+as of `origin/main` (v2.4.0) `audio_dl_ui/` still contains just
+`__init__.py` + `static/` — no `related.py`, no `_RELATED_*` symbols, no
+`url_related` event, no linger. The reconciliation below is written for
+the state *after* that plan is implemented; everything it calls "shipped"
+is shipped only once that implementation merges. Reconciliation:
 
-- **Sequencing: related-content ships first, on the current monolith.**
-  Its plan is anchored to the monolith's line numbers, needs nothing from
-  this program, and is approved and verified. Increments 1–6 then proceed
-  as written, absorbing the shipped `audio_dl_ui/related.py` into the
+- **Sequencing: related-content is implemented first, on the current
+  monolith.** Its plan is anchored to the monolith's line numbers, needs
+  nothing from this program, and is approved. Once it merges, increments
+  1–6 proceed as written, absorbing `audio_dl_ui/related.py` into the
   package split.
+- **Hard gate (enforcement, not prose):** **increment 1 must not open
+  until the related-content implementation is merged and the shim-table
+  names below are re-verified against the real code.** This is a
+  checklist precondition in the plan's status block, not a suggestion —
+  the 8-hourly autonomous PR watcher merges PRs and dispatches fix
+  agents, so a prose sequencing rule alone is not an enforcement
+  mechanism. If the related-content plan slips or changes shape, the shim
+  table (increment 1) and the hook-glue dedupe (increment 6) re-derive
+  from whatever actually landed.
 - **Increment 7 is superseded.** The shipped feature is yt-dlp-native
   only (YouTube Mix / SoundCloud recommended → cross-platform
   same-artist search), **default ON** with a `--no-related` opt-out, no
@@ -75,9 +93,10 @@ increment 7 / worked example. Reconciliation:
   the layered package* (see the plan doc's amended increment 7).
 - **The per-job SSE linger contradiction is resolved pragmatically.**
   This spec rejected a "per-job SSE keepalive grace window" in favor of
-  the v2 global channel; the shipped feature uses exactly that grace
-  window (a ≤10 s linger in `_events_iter`). Verdict: the linger ships
-  in v1 — it exists, it's tested, and the v2 channel doesn't yet.
+  the v2 global channel; the related-content design uses exactly that
+  grace window (a ≤10 s linger in `_events_iter`). Verdict: the linger
+  ships **with the related-content plan, in v1** — it lands before this
+  program does, and the v2 channel doesn't exist until increment 5.
   Migrating `url_related` onto the v2 global channel and deleting the
   linger becomes optional later polish under the existing
   "Frontend v1→v2 client migration" out-of-scope item.
@@ -101,14 +120,26 @@ increment 7 / worked example. Reconciliation:
 Sections below marked *(superseded — see Amendment)* are kept as the
 historical record of the pre-brainstorm design.
 
-## Current state (verified 2026-07-01, v2.2.0)
+## Current state (re-verified 2026-07-05 against `origin/main`, v2.4.0)
 
-- `audio_dl_ui/__init__.py` — one module holding: 10 routes, `JOBS`
-  (module-level dict, in-memory, **never evicted**), `_GLOBAL_EXECUTOR`
-  (process-wide `ThreadPoolExecutor`, the only concurrency knob), SSE fan-out
-  (`_emit` → per-subscriber bounded `queue.Queue(128)`), CSRF, two thumbnail
-  subsystems, macOS dialogs/Finder-reveal, dependency pre-flight, argparse
-  entry, and the SPA catch-all.
+*(Originally written against v2.2.0 on 2026-07-01; re-stamped after PR #56
+landed the auto-shutdown subsystem in v2.4.0. The module is now **1,550
+lines**, and the suite is **47 classes / 2,632+ lines**.)*
+
+- `audio_dl_ui/__init__.py` — one module holding: 11 routes (10 + the
+  new `GET /presence`), `JOBS` (module-level dict, in-memory, **never
+  evicted**), `_GLOBAL_EXECUTOR` (process-wide `ThreadPoolExecutor`, the
+  only concurrency knob), SSE fan-out (`_emit` → per-subscriber bounded
+  `queue.Queue(128)`), CSRF, two thumbnail subsystems, macOS
+  dialogs/Finder-reveal, dependency pre-flight, argparse entry, the SPA
+  catch-all, **and the v2.4 auto-shutdown subsystem** (`_Presence` /
+  module-level `_PRESENCE`, `_presence_reset/_connect/_disconnect/_iter`,
+  `_should_auto_shutdown`, `_shutdown_watchdog`, `_auto_shutdown_enabled`,
+  `_SHUTDOWN_GRACE_SECONDS`, plus the CSRF-guarded `GET /presence` SSE
+  route). This subsystem is the **first signal-adjacent machinery in the
+  module** — the watchdog thread exits the server via `SIGINT`, riding
+  uvicorn's own handler — so the "no signal handling anywhere" note below
+  is now only half true.
 - Job history lives **client-side** in `localStorage` (`use-history.ts`);
   the server forgets everything on restart, and a page refresh orphans
   in-flight jobs (`tracked-jobs.ts` is in-memory only — the job keeps
@@ -117,12 +148,16 @@ historical record of the pre-brainstorm design.
   thumbnail); `track`, `artist`, `channel_id`, `tags`, `webpage_url` are
   discarded — a related-content feature has **no data pipeline today**.
 - `_run_one` blocks up to **1.5 s per completed download** polling for the
-  thumbnail fetch thread (`audio_dl_ui/__init__.py:567-570`).
-- No API versioning (bare `/jobs` + inconsistent `/api/*`), no service
-  layer, no durable logs (the `.app`'s stderr is invisible), no signal
-  handling anywhere, and the SSE event shapes are hand-synced across three
-  places (Python dict builders, TS interfaces, the `use-job-events.ts`
-  reducer).
+  thumbnail fetch thread (the poll loop at the tail of `_run_one`; anchor
+  to the symbol, not a line number — line anchors here are already stale
+  and the related-content plan landing first shifts them again).
+- No API *versioning* (bare `/jobs` + inconsistent `/api/*`), no service
+  layer, no durable logs (the `.app`'s stderr is invisible), and the SSE
+  event shapes are hand-synced across three places (Python dict builders,
+  TS interfaces, the `use-job-events.ts` reducer). Signal handling is no
+  longer entirely absent: the v2.4 watchdog exits via `SIGINT` through
+  uvicorn's handler, but there is still no drain-on-`SIGTERM` path (the
+  gap increment 4 fills — see the watchdog-integration note there).
 
 ## Hard constraints (all preserved)
 
@@ -139,11 +174,12 @@ historical record of the pre-brainstorm design.
 | `--selfcheck` + headless `127.0.0.1:8000` smoke contract | `smoke-test-bundle.sh` |
 | PyInstaller static analysis: new/lazy imports must reach `hiddenimports` | the mutagen incident |
 
-**Test-contract names are API.** The suite (2,442 lines, 44 classes)
-imports or monkeypatches these module-level names; every one stays
-importable from `audio_dl_ui` via re-export shims for the whole program —
-no renames (specifically **not** `_require_csrf` → anything else; tests
-don't patch it, but every route's `Depends()` wiring references it):
+**Test-contract names are API.** The suite (2,632+ lines, 47 classes as
+of v2.4.0) imports or monkeypatches these module-level names; every one
+stays importable from `audio_dl_ui` via re-export shims for the whole
+program — no renames (specifically **not** `_require_csrf` → anything
+else; tests don't patch it, but every route's `Depends()` wiring
+references it):
 
 `JOBS`, `JobState`, `UrlState`, `_Cancelled`, `_GLOBAL_EXECUTOR`,
 `download_media`, `sanitize_url`, `_check_dependencies`, `_run_one`,
@@ -154,6 +190,25 @@ don't patch it, but every route's `Depends()` wiring references it):
 `_thumb_cache_dir`, `_THUMB_ROOT`, `_THUMB_MAX_BYTES`, `_LOOPBACK_HOSTS`,
 `_check_dependencies_gui`, `_show_macos_dialog`, `_selfcheck_problems`,
 `_refresh_dev_mode`, `app`, `main`.
+
+**Plus the v2.4 auto-shutdown subsystem** (PR #56), which the split must
+carry and which tests pin on the root module exactly like `JOBS` — e.g.
+`ui._PRESENCE.last_disconnect` is mutated directly, the same
+shared-singleton pattern — so increment 1's "zero test edits" fails
+without them shimmed: `_Presence`, `_PRESENCE`, `_presence_reset`,
+`_presence_connect`, `_presence_disconnect`, `_presence_iter`,
+`_should_auto_shutdown`, `_shutdown_watchdog`, `_auto_shutdown_enabled`,
+`_SHUTDOWN_GRACE_SECONDS`. In the target layout the presence state lives
+next to the bus (`events/presence.py`, or alongside `events/sse.py`) and
+the `GET /presence` route lands in `routers/legacy.py` with the other
+frozen routes.
+
+**And — conditionally — the related-content feature's names**, once its
+plan lands (it lands first; see the Amendment): `related.py` symbols,
+`_RELATED_EXECUTOR`, `_run_discovery`, `_fetch_related_thumb_bytes`,
+`_GUARANTEED_EVENT_TYPES`, `_RELATED_LINGER_CAP_SECONDS`. These are
+re-verified against the real merged code at increment 1's gate, not taken
+on faith from the plan.
 
 **Patch-target locations are contract too, not just names.** Tests patch
 `audio_dl_ui.httpx.stream` (7 sites), `audio_dl_ui.uvicorn`,
@@ -220,6 +275,31 @@ audio_dl_ui/
 `hiddenimports` so the deeper package can never silently drop a module from
 the `.app` (the mutagen lesson, closed structurally).
 
+**`create_app(settings)` configures and returns the module-level `app`
+singleton — it does not build a fresh instance.** Tests do
+`TestClient(app)` and mutate `app.state` on the import-time singleton; if
+the factory returned a new instance for `main()`, the store / manager /
+GC / settings would attach to an app the tests never see. So `app` is
+created module-level (as today), `create_app` wires routers and returns
+*that* object, and `main()` mutates its `app.state`. This is the
+increment-1/5 contract; the factory is a configuration seam, not an
+instance factory.
+
+**Increment 1's "zero test edits" needs an automated guard, not
+eyeball.** The root-namespace-dereference rule
+(`import audio_dl_ui as root; root.httpx.stream(...)`) is what keeps
+`patch("audio_dl_ui.httpx.stream")` intercepting after code moves across
+a ~25-module split; a single bare `import httpx` in a moved file passes
+the suite today and silently rots the patch later. Add a test that
+asserts patch interception still fires at each moved call site (or an
+import-linter contract forbidding direct `import httpx`/`uvicorn`/
+`webbrowser` in the moved modules). Also: the "import cycles (runner ↔
+bus)" risk is illusory — the dependency is one-way — and the `emit`
+callable that breaks it must be a **module-level default**, never a new
+required parameter on a pinned-signature function
+(`_make_progress_hook(job, url_state)` etc. are called with fixed arity
+by tests).
+
 ### Configuration
 
 `config.py` defines a **frozen plain dataclass** (deliberately not
@@ -285,6 +365,16 @@ Reads use per-request connections in WAL mode. This sidesteps
 (`url_started/completed/failed`, `job_completed`) so the hot path never
 does I/O.
 
+**One non-transition write is mandatory:** `thumb_id`. Increment 6 moves
+thumbnail delivery to a follow-up `url_metadata` event that fires *after*
+`url_completed` — which is **not** a state transition, so on the
+transition-only trigger set it never persists, `job_urls.thumb_id` stays
+null, and the Library view shows no art after a restart. The writer's
+persist triggers therefore include a `thumb_ready`/`url_metadata`
+carrying `thumb_id` (and, in increment 6, `source_meta`), verified by a
+reopen-and-assert test. The same applies to any later additive field
+delivered off the transition path.
+
 **Migrations:** `PRAGMA user_version` + ordered migration functions in
 `migrations.py` (no Alembic — zero-ops end users). Later increments that
 add columns (e.g. related-content metadata) ship a migration; a
@@ -295,29 +385,65 @@ non-terminal are marked `interrupted` — a half-downloaded yt-dlp fragment
 stream can't resume across a process death. The UI can offer one-click
 re-queue; yt-dlp's own `.part` handling resumes what it can.
 
-**Graceful shutdown (new — today there is zero signal handling):** a
-uvicorn lifespan shutdown hook plus SIGTERM handler: set a global
-draining flag, flip in-flight jobs to `interrupted` in the store *at
-shutdown* (not just at next startup), flush the writer queue with a
-deadline, and leave `.part` files in place (they enable resume-on-requeue).
-Explicit policy: **cancel deletes partials** (user intent: discard);
-**crash/shutdown keeps them** (enables resume). Covers both Cmd-Q on the
-`.app` and `docker stop` on the personal cloud.
+**Graceful shutdown (new — but no longer greenfield; v2.4 added a
+watchdog):** a uvicorn lifespan shutdown hook plus SIGTERM handler: set a
+global draining flag, flip in-flight jobs to `interrupted` in the store
+*at shutdown* (not just at next startup), flush the writer queue with a
+deadline, and leave `.part` files in place (they enable
+resume-on-requeue). Covers Cmd-Q on the `.app`, `docker stop` on the
+personal cloud — **and the most common desktop shutdown, the v2.4
+watchdog exiting when the last tab closes.** That watchdog already exits
+via `SIGINT`; increment 4's drain path must run on *that* exit too, not
+just SIGTERM, or the common case skips the new persistence guarantees.
+Concretely: the watchdog and both signal paths funnel through one
+`_drain_and_exit()` helper (flip jobs → flush writer queue → exit); the
+lifespan shutdown hook is the single place the drain is defined.
+
+**Partial-file policy (`.part`):** **crash/shutdown keeps partials**
+(enables resume); **cancel deletes them** (user intent: discard). This is
+*new behavior* — today `cancel_job` only sets flags and nothing deletes a
+`.part`. The deletion mechanism must be surgical: jobs share one
+`output_dir` on one executor, so a directory sweep can delete a
+concurrent job's in-flight fragments. Capture the exact temp path per URL
+from the progress hook (`d["tmpfilename"]`) and delete **only that path**,
+with a concurrent-job test proving a sibling job's partials survive. If
+that precision proves fragile, drop the delete-on-cancel policy and keep
+today's flags-only behavior rather than risk cross-job data loss.
+
+**Writer-thread failure is a first-class lost-write path, not an
+afterthought:** if the single writer thread dies (disk full, DB
+corruption) the write queue grows unbounded and *every* state transition
+silently fails to persist — and `/api/v2/health`'s DB probe checks a
+*reader* connection, so it stays green. Define the handling: the writer
+catches per-op exceptions and continues; a fatal loop exit sets a
+`store_degraded` flag surfaced through `/api/v2/health` (degraded, not
+OK) and logged at ERROR; the drain deadline is accounted for explicitly
+(a completed job whose final write was dropped past the deadline must not
+be silently resurrected as `interrupted` on next start — reconcile
+memory-terminal against store-non-terminal at shutdown).
 
 ### API surface
 
 - **Legacy surface (frozen forever):** `POST /jobs` (returns exactly
   `{job_id}`), `GET /jobs/{id}/events`, `POST /jobs/{id}/cancel`,
   `GET /jobs/{id}/thumb/{idx}.jpg`, `POST /reveal`, `GET /thumbs/{id}.jpg`,
-  `GET /api/version`, `GET /api/settings/defaults`, `GET /api/csrf`, SPA
-  catch-all. These are the de-facto v1 the shipped React bundle speaks;
-  `routers/legacy.py` keeps them as thin adapters over the service layer.
+  `GET /presence` (v2.4 auto-shutdown SSE stream; CSRF-guarded like the
+  other streams), `GET /api/version`, `GET /api/settings/defaults`,
+  `GET /api/csrf`, SPA catch-all. These are the de-facto v1 the shipped
+  React bundle speaks; `routers/legacy.py` keeps them as thin adapters
+  over the service layer.
 - **`/api/v2/` (canonical, additive):**
   - `GET /api/v2/jobs?active=1&limit=N` — server-authoritative job list
     (the thing localStorage never gave us).
   - `GET /api/v2/jobs/{id}` — snapshot without opening a stream.
   - `GET /api/v2/events` — **persistent multiplexed SSE channel** (below).
-  - `GET /api/v2/jobs/{id}/urls/{idx}/related` — related-content payload.
+  - ~~`GET /api/v2/jobs/{id}/urls/{idx}/related` — related-content
+    payload.~~ *(superseded — see Amendment.* The shipped related-content
+    feature stores results in **localStorage** and adds **no server
+    endpoint**; do **not** build this route in increment 5/7. It survives
+    only as an **explicit optional migration** if the feature is ever
+    re-homed onto server-side persistence — not a canonical v2 route and
+    **not a codegen target** until then.)*
   - `GET /api/v2/health` — selfcheck-derived readiness (also used by the
     Docker target's healthcheck).
   - All mutations/streams reuse `Depends(_require_csrf)` unchanged.
@@ -325,7 +451,16 @@ Explicit policy: **cancel deletes partials** (user intent: discard);
   `web/src/lib/generated/v2.ts` from FastAPI's schema; a backend field
   rename becomes a TS compile error instead of a silent runtime break.
   v1's hand-maintained shapes stay frozen-by-test and are deliberately
-  left out of codegen.
+  left out of codegen. **The generated file is committed, not built at
+  web-build time.** `scripts/build-web.sh` runs *before*
+  `pip install -e '.[ui]'` in `tests.yml`, so a build-time generator
+  would need Python present at web-build and would reorder the pipeline;
+  committing the file avoids that, crosses the mirror to the public repo
+  for free (the public repo never needs Python at web-build time), and
+  turns drift-detection into a plain `git diff --exit-code` after
+  re-running the named regen script. (See the open decision below on
+  whether to build codegen at all before the frontend v2 migration has a
+  consumer.)
 
 ### Realtime events
 
@@ -348,6 +483,19 @@ frontend tests for zero user benefit). Two tiers:
    persistent `thumb_id` cache, the jobs DB), never the ephemeral per-job
    temp dir.
 
+   **The global channel must not re-introduce the very leak the store
+   eviction (increment 3) fixes.** Per-job streams self-terminate on
+   `job_completed`; the global stream lives until the client cleanly
+   disconnects, which a crashed/refreshed tab never does. So the global
+   channel carries the *same* bounded-`128` per-subscriber queue with the
+   drop-oldest-progress overflow policy as the per-job streams, **plus**
+   keepalive-driven idle reaping: a periodic keepalive write detects a
+   dead peer (write error / no consumer draining a full queue past a
+   grace window) and evicts the subscriber. A dead-subscriber test
+   asserts the queue is unregistered after the peer vanishes. Without
+   this, N browser refreshes leak N subscriber queues forever — exactly
+   what `JOBS` eviction was added to prevent.
+
 **Frontend reconnect flow (the refresh-orphan fix, paired client work):**
 on app load, query `GET /api/v2/jobs?active=1`; for each in-flight job,
 re-open its per-job SSE stream (snapshot-on-connect makes this free) and
@@ -360,11 +508,26 @@ New rule, applied to the existing thumbnail fetcher and all provider
 calls: outbound requests go through one helper (`egress.py`) that
 enforces **http/https schemes only, bounded connect/read timeouts, a
 redirect cap, and rejection of loopback/private/link-local destination
-IPs** (checked post-DNS-resolution). Provider calls are further
-restricted to a **host allow-list** (`musicbrainz.org`,
-`labs.api.listenbrainz.org`, `api.song.link`) — they never fetch
-arbitrary URLs. Thumbnail URLs from yt-dlp info dicts are semi-trusted
-and get the full private-IP guard.
+IPs**. Provider calls are further restricted to a **host allow-list**
+(`musicbrainz.org`, `labs.api.listenbrainz.org`, `api.song.link`) — they
+never fetch arbitrary URLs. Thumbnail URLs from yt-dlp info dicts are
+semi-trusted and get the full private-IP guard.
+
+**The private-IP check must survive DNS rebinding — a post-resolution
+check alone does not.** If `egress.py` validates the resolved IP and then
+hands the *hostname* back to httpx, httpx re-resolves at connect time: a
+TTL-0 record that returns a public IP on the check and `169.254.169.254`
+(cloud IMDS) on the connect defeats the guard. `follow_redirects=True`
+has the same hole — a `302` to an internal address is followed without
+re-entering the guard, and today's `_fetch_thumbnail` does exactly this
+on semi-trusted info-dict URLs. The mechanism, specified so increment 2
+actually closes the hole it names: **resolve the host once, validate the
+returned literal IP(s), then connect to the vetted literal** (custom
+`httpx` transport / resolver pin, or Host-header + SNI override), and set
+**`follow_redirects=False`** with manual per-hop re-validation through the
+same helper up to the redirect cap. "Checked post-DNS-resolution" is
+necessary but not sufficient; the connect must use the checked IP, not a
+second resolution.
 
 **Sequencing is deliberate:** the helper and its retrofit onto
 `_fetch_thumbnail` (which today streams arbitrary info-dict URLs with
@@ -411,34 +574,170 @@ Caps are `Settings` fields.
   converged on "single operator, private network" for these reasons.
 
 **Personal cloud: yes, as the last optional increment.** A `Dockerfile`
-(python-slim + system ffmpeg, `pip install '.[ui]'`, **no** `[app]` extra)
-running the same app with `--persist --host 0.0.0.0 --allow-remote`,
-documented as: **must sit behind the operator's own auth**
-(Tailscale/reverse-proxy) — never raw-public; BYO cookies mounted
-read-only at launch (CLI-side, honoring the credential rule); serverless
-explicitly rejected (ffmpeg transcodes exceed Lambda limits). yt-dlp
-staleness in a container is handled by an opt-in entrypoint flag
+(python-slim + system ffmpeg, `pip install '.[ui]'`, **no** `[app]`
+extra) running the same app with `--persist --host 0.0.0.0
+--allow-remote`. The `docker-compose.yml` is the source of truth for the
+deployment posture; see the posture doc below.
+
+**The datacenter-IP wall applies to the personal cloud too — say so
+plainly.** The same fact that kills SaaS (datacenter IPs get
+BotGuard/PO-token-blocked, ~20-40% success vs 85-95% residential) hits a
+VPS deploy: a Hetzner/Lightsail instance sees **YouTube extraction
+degraded 60-80%** while **SoundCloud is unaffected** (it doesn't gate on
+ASN the same way). This is an *egress-routing* problem and is **distinct
+from inbound auth** — the two must not be conflated:
+
+- **Inbound auth** (who may reach the UI) — front the app with the
+  operator's own auth (Tailscale / reverse-proxy); never raw-public. This
+  does nothing for extraction success.
+- **Egress routing** (where yt-dlp's requests originate) — the actual
+  mitigation for the datacenter wall. Two real options, documented
+  distinctly: **(a)** route yt-dlp egress through a **residential IP** via
+  a Tailscale exit node or WireGuard tunnel back to a home network (most
+  durable — restores near-residential success); **(b)** a
+  `bgutil-ytdlp-pot-provider` **PO-token sidecar** (helps, but is
+  insufficient on an IP already flagged). Ship the exit-node pattern as a
+  **commented-out block in `docker-compose.yml`** so an operator can
+  uncomment it.
+
+**Cookies on the container, corrected.** The earlier "BYO cookies mounted
+read-only" guidance was wrong on three counts and is replaced: (1)
+`--cookies-from-browser` is impossible in a headless container — only a
+`--cookies cookies.txt` file works; (2) a **read-only** mount breaks
+yt-dlp's cookie-refresh writeback, so the cookies file mounts
+**writable**; (3) YouTube binds session cookies to the originating
+IP/fingerprint and burns them fast from datacenter ASNs — using an
+account's cookies from a flagged datacenter IP risks the Google account,
+so cookies **degrade fast from datacenter IPs** and are not a substitute
+for residential egress. Credentials still stay CLI-side (the file is
+passed to the CLI layer, never through the web UI).
+
+Serverless stays **explicitly rejected** (ffmpeg transcodes exceed Lambda
+limits); the analogous honesty for VM deploys is the datacenter-egress
+caveat above, not silence.
+
+yt-dlp staleness in a container is handled by an opt-in entrypoint flag
 (`AUDIO_DL_UPDATE_YTDLP=1` → `pip install -U yt-dlp` at start), the
 standard MeTube-style pattern, so extractor fixes don't require image
-rebuilds. For the primary distributions the yt-dlp policy stays what it
-is today: unpinned floor for pip installs (users `pip install -U`), and
-the `.app` bundles whatever is current at build time — extractor
-breakage between releases is fixed by cutting a patch release. A
-parallel, non-blocking CI job builds the image; `release.yml` (macOS
-`.app`) is untouched.
+rebuilds. Caveats made explicit: it must **not hard-fail boot on a
+network error** (log and continue on the pinned image version); it targets
+a **writable location** (breaks under `--read-only` root filesystems —
+document a writable pip target or the incompatibility); use
+`pip install -U --no-cache-dir`; and note the SBOM/scan caveat (the
+running image no longer matches its published digest). For the primary
+distributions the yt-dlp policy stays what it is today: unpinned floor
+for pip installs (users `pip install -U`), and the `.app` bundles
+whatever is current at build time — extractor breakage between releases
+is fixed by cutting a patch release.
+
+### Container deployment posture (increment 8 details)
+
+- **Volumes are enumerated in `docker-compose.yml`, which is the source
+  of truth.** Named/bind volumes for `output_dir` (the downloads — the
+  actual crown jewels), the data dir (SQLite DB + thumb cache), and logs.
+  Without them `docker compose down` destroys the downloads and
+  increment 4's "shutdown keeps `.part` for resume" is a no-op on the one
+  target where restarts are routine.
+- **Logging flips to stdout in the container.** `RotatingFileHandler`
+  into the data dir is right for the `.app` (stderr is invisible there)
+  and backwards in a container (stdout is the only observability surface;
+  an in-container log file dies with the container). Add a log-sink
+  `Settings` field; the Docker entrypoint selects stdout.
+- **SSE through a reverse proxy.** The remote path mandates a proxy;
+  nginx's default `proxy_buffering on` withholds `job_snapshot` and clumps
+  progress, and default read timeouts cut idle streams. SSE responses
+  emit `X-Accel-Buffering: no` + `Cache-Control: no-cache`, and the
+  posture doc carries the proxy snippet (buffering off, long read
+  timeout).
+- **No-auth guardrail.** Desktop refuses non-loopback without
+  `--allow-remote`; the container defaults to `AUTH_MODE=none` and binds
+  `0.0.0.0`. Log a prominent startup warning ("no app-level auth — front
+  this with your own auth proxy") as cheap defense-in-depth.
+- **Non-root + PUID/PGID.** `python:slim` runs as root, and root-owned
+  files in a bind-mounted `output_dir` is the classic self-hosted
+  complaint. Carry MeTube's `PUID`/`PGID` convention (already cited as
+  prior art) and run as a non-root user.
+- **Healthcheck without curl.** python-slim ships no curl; the
+  healthcheck is a `python -c` urllib probe against `/api/v2/health`,
+  which is **CSRF-exempt** and keeps a minimal body.
+- **Base image pinning** is a deliberate call, not left silent: either
+  pin to a digest with a bump cadence, or state the floating tag as an
+  intentional tradeoff consistent with the yt-dlp unpinned-floor policy.
+- **`_auto_shutdown_enabled` already returns `False` under
+  `--allow-remote`** (v2.4), so the container will **not** kill itself
+  when browser tabs close — the auto-shutdown watchdog is correctly inert
+  on this target. Say so; no extra work needed.
+
+### Publishing the image (increment 8, two-tier like `release.yml`)
+
+The image is not just built — it is **published**, mirroring the existing
+`.app`/site two-tier, repo-guarded pattern:
+
+- **Every push, both repos:** build the image + run a mocked-download
+  smoke test. Unauthenticated, **no registry push** — a fast breakage
+  gate only.
+- **Publish only on the public repo, tag-triggered:** guarded exactly like
+  `release.yml` (`if: github.repository == 'jaterrell/audio-dl'`), pushing
+  `ghcr.io/jaterrell/audio-dl:vX.Y.Z` + `:latest` via `docker/login-action`
+  with the default `GITHUB_TOKEN` (`packages: write`) — **no new secret**
+  joins the rotation list. Build **multi-arch (`linux/amd64,linux/arm64`)
+  on the publish job only**; ARM home servers and VPSes are a primary
+  audience for this target. `release.yml` (macOS `.app`) and
+  `mirror-public.yml` are untouched.
 
 If off-box durability for the SQLite store is ever wanted on the
 personal-cloud target, **Litestream** (continuous WAL streaming to
 S3-compatible storage) is the documented option — a sidecar, no code
-change, and a better fit than LiteFS for a single-server deploy.
+change, and a better fit than LiteFS for a single-server deploy. Scope it
+honestly: Litestream backs up the **job metadata DB only**, not
+`output_dir` (the actual crown jewels — the downloaded files). Point the
+operator at ordinary volume backup for the files.
 
-**Remote-deploy CSRF hardening (v2, optional):** the `?token=` query
-transport leaks into proxy logs/history/Referer on a remote deploy. When
-the app is launched with `--allow-remote`, `GET /` additionally sets the
-token as an `HttpOnly; SameSite=Strict` cookie, and CSRF checks accept
-cookie+header double-submit — `EventSource` and `<img>` send cookies
-automatically, so query-param tokens become unnecessary on the remote
-path. Loopback behavior is unchanged.
+**Remote-deploy CSRF hardening — required whenever `--allow-remote` is
+actually used (the Docker target always does); moot on loopback. One
+coherent model, and a threat model first.** With `AUTH_MODE=none` there is no authenticated
+session to protect, so the CSRF token is functionally a **bearer secret**
+with no rotation, expiry, or user binding — this is the honest threat
+model, and the remote-deploy answer is "front it with your own auth
+proxy" (above); the token is defense-in-depth against cross-site POSTs,
+not an auth system.
+
+The earlier draft of this paragraph was **internally contradictory**: it
+set the token as an `HttpOnly; SameSite=Strict` cookie *and* asked CSRF
+checks to accept cookie+header double-submit. Double-submit requires JS
+to read the cookie and echo it into `X-Audio-DL-Token`; `HttpOnly` makes
+that impossible, and the `<meta name="csrf-token">` injection that would
+otherwise supply the header is gated on a loopback client + loopback
+Host, so a **remote browser gets neither the meta tag nor a readable
+cookie nor a `?token=`** — it can never form the credential to POST
+`/jobs`. Pick one model:
+
+- **Chosen: server-only cookie + `SameSite=Strict`, plus meta-tag
+  injection on the remote path.** Keep the token cookie `HttpOnly`
+  (server-only), rely on `SameSite=Strict` so cookie-carrying requests
+  (`EventSource`, `<img>`, top-level POSTs) are same-site by construction,
+  **and extend the `<meta name="csrf-token">` injection to the
+  `--allow-remote` path** so header-bearing `fetch()` (the `POST /jobs`
+  call) has a token to send. State per request which mechanism protects
+  it: streams/images ride the `SameSite` cookie; JSON `fetch` mutations
+  carry the meta-sourced header. (The rejected alternative — drop
+  `HttpOnly` and do true JS-readable double-submit — also works but
+  exposes the token to any XSS; the `.app`'s bundled SPA is trusted, so
+  the server-only cookie is preferred.)
+- **Restart churn is fixed with a stable operator token.**
+  `app.state.csrf_token` regenerates every process start, so a container
+  with `restart: unless-stopped` (or `AUDIO_DL_UPDATE_YTDLP=1` restarts)
+  invalidates every session, and the v2.3.0 stale-token recovery
+  (refetch `/`) fails remotely because the re-served page is token-less.
+  On the remote path, accept an **operator-supplied token via env**
+  (stable across restarts) and make the stale-token recovery actually
+  serve a fresh meta tag remotely. Loopback behavior is unchanged.
+
+The acceptance test for this increment is end-to-end and **gating, not
+optional**: **a remote client (no `?token=`, no loopback meta injection)
+can actually `POST /jobs`** and it survives a container restart. Without
+it the healthcheck passes while every real remote mutation 403s on a
+token-less page — a cloud UI that can't queue a download does not ship.
 
 **Auth seam, shipped disabled:** the service layer passes an opaque
 `principal` (constant `"local"`) through job creation/listing. It is a
@@ -561,6 +860,19 @@ companion plan doc:
   honest.
 - **Alembic migrations** — operational overkill for end users;
   `PRAGMA user_version` suffices.
+- **Serialized single-connection WAL writes instead of a dedicated writer
+  thread + queue** (increment 4). An independent reviewer argued the
+  writer-thread machinery is bespoke concurrency for what is effectively a
+  read-only archive, and that a single serialized WAL connection guarded
+  by a lock would be simpler and eliminate the writer-death lost-write
+  class outright. Kept as the recorded alternative: the writer-thread
+  design stays (it keeps the download hot path off any write lock and is
+  the substrate increment 8 depends on), but the serialized variant is the
+  fallback if the failure-mode handling above proves fussy. **Recorded
+  decision: keep increment 4, minimal** — its two real bugs (memory leak,
+  refresh orphans) are fixed by increments 3+5, but 4 is the substrate for
+  server-authoritative history, `/reveal` after restart, and the personal
+  cloud (8 depends on it).
 
 ## Out of scope (separate decisions, not part of this program)
 
@@ -572,6 +884,12 @@ companion plan doc:
 - **Frontend v1→v2 client migration.** The React app keeps speaking v1
   indefinitely; adopting v2 endpoints (job list, generated types, global
   channel) happens feature-by-feature on the frontend's own schedule.
+  *Recorded open decision (codegen timing):* `v2.ts` has **zero
+  importers** until this migration, so the generator + drift gate protect
+  nothing on day one. Either defer codegen to the first consumer, or build
+  it now to lock the contract early — both defensible. **If built now, the
+  committed-file design above is the only variant that doesn't perturb the
+  `tests.yml` build order.**
 - **Multi-user auth.** The `principal` seam ships disabled; building it
   is explicitly deferred until a real (legal) need exists.
 

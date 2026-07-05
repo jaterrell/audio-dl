@@ -569,9 +569,11 @@ endpoints.
 
 ## Versioning & docs
 
-Implementation PR bumps `__version__` + `pyproject.toml` to **v2.4.0**, adds
-`## v2.4` to `CHANGELOG.md` (amended 2026-07-04: originally v2.3.0, but
-v2.3.0 shipped on 2026-07-03 as the landing-page/CSRF release), updates
+Implementation PR bumps `__version__` + `pyproject.toml` to **v2.5.0**, adds
+`## v2.5` to `CHANGELOG.md` (amended 2026-07-05: originally v2.3.0, then
+briefly v2.4.0 — but v2.3.0 shipped 2026-07-03 as the landing-page/CSRF
+release and v2.4.0 shipped as the auto-shutdown release (#56), so this
+feature is the next open slot, v2.5.0), updates
 CLAUDE.md's layout section (mention
 `audio_dl_ui/related.py`, add this spec to the deep-dive links — noting the
 section's description of the UI internals predates the React rewrite and
