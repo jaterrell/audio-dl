@@ -1,9 +1,14 @@
 # Backend Modernization — Implementation Plan
 
-**Status:** ON HOLD — do not start until the in-flight feature brainstorm
-concludes; increments 1–5 are expected to survive any outcome, but the
-program owner re-confirms ordering first.
-**Date:** 2026-07-01
+**Status:** ACTIVE (unblocked 2026-07-04) — the feature brainstorm
+concluded in the [related-content design](../specs/2026-07-01-related-content-discovery-design.md)
++ [plan](2026-07-03-related-content-discovery.md), which supersedes
+increment 7. **Sequencing: that plan executes first, on the current
+monolith** (it is line-number-anchored to it and needs nothing from this
+program); increments 1–6 then proceed as written, absorbing the shipped
+feature. See the spec's *Amendment (2026-07-04)* for the full
+reconciliation.
+**Date:** 2026-07-01 (amended 2026-07-04)
 **Spec:** [2026-07-01-backend-modernization-design.md](../specs/2026-07-01-backend-modernization-design.md)
 
 ## Ground rules (every increment)
@@ -34,7 +39,11 @@ Split `audio_dl_ui/__init__.py` into the spec's layout (`app.py`,
 `routers/{legacy,system,spa}.py`, `native/{desktop,preflight}.py`) with
 `__init__.py` re-exporting every pinned name. **Zero behavior change;
 zero test edits** — that's the acceptance test. Swap `audio-dl.spec` to
-`collect_submodules("audio_dl_ui")`.
+`collect_submodules("audio_dl_ui")`. The shim table additionally covers
+the related-content feature's names, which land first (`related.py`
+symbols, `_RELATED_EXECUTOR`, `_run_discovery`,
+`_fetch_related_thumb_bytes`, `_GUARANTEED_EVENT_TYPES`,
+`_RELATED_LINGER_CAP_SECONDS`).
 
 - Verify: full test suite untouched and green; `.app` build + smoke test.
 - Abandon state: a readable, navigable package. Worth having alone.
@@ -58,11 +67,14 @@ response), `paths.py` (per-OS data/config/log dirs — includes the
 `logging_setup.py` (stdlib `RotatingFileHandler`; job transitions +
 errors logged), and `egress.py` — the guarded outbound-HTTP helper
 (scheme allow-list, bounded timeouts, redirect cap, private-IP guard)
-**retrofitted onto `_fetch_thumbnail` now**, so SSRF hardening lands
-before any remote-deploy work rather than inside the optional related
-feature. `main()` builds `Settings` and stores it on
-`app.state.settings`; old `app.state.default_output_dir` /
-`max_parallel` / `csrf_token` reads become shims over it.
+**retrofitted onto `_fetch_thumbnail` now** — the shipped related-content
+feature deliberately left it unhardened — and absorbing that feature's
+own helpers (`_fetch_related_thumb_bytes`, `is_allowed_thumb_url`) so
+one module owns outbound HTTP policy. `main()` builds `Settings` and
+stores it on `app.state.settings`; old `app.state.default_output_dir` /
+`max_parallel` / `csrf_token` / `related_enabled` reads become shims
+over it (`related_enabled` is a Settings field, default true, set false
+by `--no-related`).
 
 - Verify: existing settings/CSRF tests green via shims; new unit tests
   for precedence order, TOML parsing, `paths.py` per-platform branches
@@ -130,10 +142,16 @@ separately): on load, `GET /api/v2/jobs?active=1` → re-open per-job SSE
 Extend the first-info-dict branch in `jobs/runner.py` to capture
 `track, artist, album, channel_id, webpage_url, tags, extractor` into
 `UrlState.source_meta` (additive dataclass field, additive DB column +
-migration, additive snapshot field). **Remove the 1.5 s thumbnail poll**
-from `_run_one`: the fetch thread persists to the cache itself and emits
-a follow-up `url_metadata` event carrying `thumb_id`; `url_completed`
-carries `thumb_id` when already available, `null` otherwise.
+migration, additive snapshot field). **This branch already hosts the
+shipped related-content glue** (seed assembly via `resolve_artist`,
+discovery trigger, `related_status` on the `url_metadata` emitters) —
+capture must coexist with it, and `source_meta` should become the seed's
+source of truth so metadata is extracted once. **Remove the 1.5 s
+thumbnail poll** from `_run_one`: the fetch thread persists to the cache
+itself and emits a follow-up `url_metadata` event carrying `thumb_id`;
+`url_completed` carries `thumb_id` when already available, `null`
+otherwise. Both emitters keep the feature's additive `related_status`
+field intact.
 
 - Verify: hook test asserts new fields captured; timing test asserts
   `_run_one` completion no longer sleeps; frontend reducer handles the
@@ -141,23 +159,23 @@ carries `thumb_id` when already available, `null` otherwise.
 - Abandon state: richer cards/history data + faster completions, useful
   regardless of what the brainstorm decides.
 
-### 7. Related-content feature (re-confirm against brainstorm outcome first)
+### 7. Re-home the shipped related-content feature (superseded build → move)
 
-`features/related/`: provider chain (MusicBrainz → ListenBrainz →
-yt-dlp-native fallback → Odesli; Last.fm only with user-supplied key),
-standalone SQLite cache (independent of the job store), dedicated
-`ThreadPoolExecutor(max_workers=2)`, `url_related` event on the v2
-global channel, `GET /api/v2/jobs/{id}/urls/{idx}/related`. Provider
-calls reuse increment 2's `egress.py` helper, adding the provider host
-allow-list. **Default OFF** (`features_related=false`) with privacy
-copy. Frontend panel consumes the event + endpoint.
+The feature itself ships **before** this program via the
+[2026-07-03 plan](2026-07-03-related-content-discovery.md) (yt-dlp-native
+providers, default ON with `--no-related`, `url_related` on the legacy
+per-job stream with a ≤10 s linger, results in localStorage). This
+increment only relocates it into the layered package: `related.py` →
+`features/related/`, hook/executor/SSE glue → `jobs/runner.py` /
+`jobs/manager.py` / `events/`, `app.state.related_enabled` → the
+`Settings.related_enabled` field (shimmed since increment 2). Optional
+follow-up (frontend-paced, not required): migrate `url_related` onto the
+v2 global channel and delete the linger.
 
-- Verify: provider tests with `httpx` mocked (chain order, fallback,
-  cache hits, rate spacing); egress-guard unit tests (scheme, private
-  IP, allow-list); event/endpoint integration tests; a job never fails
-  from a provider error.
-- Abandon state: n/a — this IS the feature; everything below survived
-  without it.
+- Verify: the feature's own test suite green unmoved (re-export shims
+  cover its pinned names); no SSE vocabulary or wire-shape change.
+- Abandon state: feature keeps working exactly as shipped; only the
+  code location differs.
 
 ### 8. Personal-cloud Docker target (optional, last)
 
@@ -176,19 +194,24 @@ for `--allow-remote` mode.
 
 ## Sequencing notes
 
+- **Increment 0, in effect: the related-content plan
+  (2026-07-03) executes first on the monolith.** Running the two
+  programs concurrently is the one forbidden arrangement — they collide
+  in `_make_progress_hook`, `_events_iter`, `UrlState`,
+  `_build_snapshot`, the guaranteed-event set, and `main()`.
 - 1→2→3→4 are strictly ordered. 5 needs 3 (list endpoint reads the
   store) but not 4. 6's metadata capture + snapshot fields need only 1,
   but its DB column/migration piece needs 4 — if 6 ever jumps ahead of
   4, ship the capture and defer the column into 4's migration chain.
-  7 needs 5+6. 8 needs 4 (persistence makes a cloud instance sane) and
+  7 (re-homing) needs only 1+2; its optional v2-channel migration needs
+  5. 8 needs 4 (persistence makes a cloud instance sane) and
   5 (its container healthcheck targets `/api/v2/health`); egress
   hardening arrives with 2, well before any remote exposure.
-- If the brainstorm outcome demands a different feature than related
-  content, increments 1–6 proceed unchanged and increment 7 is
-  re-planned; the v2 channel (5) and metadata pipeline (6) were chosen
-  because virtually any content-aware feature needs both.
+- The brainstorm outcome clause resolved on 2026-07-04: the chosen
+  feature IS related content, but per its own design — increments 1–6
+  proceed unchanged and increment 7 became the re-homing step above.
 - Estimated sizes: 1 is large-but-mechanical; 2–6 are each small/medium
-  reviewable PRs; 7 is medium; 8 is small.
+  reviewable PRs; 7 is now small; 8 is small.
 
 ## Documentation debt paid along the way
 

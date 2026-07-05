@@ -42,12 +42,64 @@ synthesis with every critic finding addressed.
    as default and an opt-in (later default) SQLite store: job history
    survives restarts, the memory leak is fixed by eviction, and the server
    finally has an authoritative job list.
-5. **Related-content ships as a keyless, default-OFF, fully-isolated
-   feature** — a provider chain (MusicBrainz → ListenBrainz →
-   yt-dlp-native → Odesli) on its own executor and its own cache, riding
-   the v2 event channel. It is the litmus test for the layering, and it is
-   **privacy-gated**: enabling it is an explicit user decision because it
-   sends track metadata to third-party APIs.
+5. *(superseded — see Amendment)* **Related-content ships as a keyless,
+   default-OFF, fully-isolated feature** — a provider chain (MusicBrainz →
+   ListenBrainz → yt-dlp-native → Odesli) on its own executor and its own
+   cache, riding the v2 event channel. It is the litmus test for the
+   layering, and it is **privacy-gated**: enabling it is an explicit user
+   decision because it sends track metadata to third-party APIs.
+   *The concluded brainstorm chose a yt-dlp-native, default-ON design
+   instead ([related-content design](2026-07-01-related-content-discovery-design.md));
+   it ships first, and increment 7 re-scopes to re-homing it.*
+
+## Amendment (2026-07-04): brainstorm concluded — program unblocked
+
+The feature brainstorm this program was holding for has concluded: the
+related-content feature was designed and planned independently
+([design](2026-07-01-related-content-discovery-design.md),
+[plan](../plans/2026-07-03-related-content-discovery.md), merged via
+PRs #42/#52/#55) — and it chose a **different design** than this spec's
+increment 7 / worked example. Reconciliation:
+
+- **Sequencing: related-content ships first, on the current monolith.**
+  Its plan is anchored to the monolith's line numbers, needs nothing from
+  this program, and is approved and verified. Increments 1–6 then proceed
+  as written, absorbing the shipped `audio_dl_ui/related.py` into the
+  package split.
+- **Increment 7 is superseded.** The shipped feature is yt-dlp-native
+  only (YouTube Mix / SoundCloud recommended → cross-platform
+  same-artist search), **default ON** with a `--no-related` opt-out, no
+  discovery cache, no new endpoints, results in localStorage — not the
+  MusicBrainz→ListenBrainz→Odesli chain, not default-OFF, not the v2
+  channel. Increment 7 re-scopes to: *re-home the shipped feature into
+  the layered package* (see the plan doc's amended increment 7).
+- **The per-job SSE linger contradiction is resolved pragmatically.**
+  This spec rejected a "per-job SSE keepalive grace window" in favor of
+  the v2 global channel; the shipped feature uses exactly that grace
+  window (a ≤10 s linger in `_events_iter`). Verdict: the linger ships
+  in v1 — it exists, it's tested, and the v2 channel doesn't yet.
+  Migrating `url_related` onto the v2 global channel and deleting the
+  linger becomes optional later polish under the existing
+  "Frontend v1→v2 client migration" out-of-scope item.
+- **Settings drops `features_related` and `lastfm_api_key`.** The feature
+  is default-ON with a `--no-related` flag (becomes a `Settings` field in
+  increment 2), and no provider needs a key.
+- **Increment 2's `egress.py` absorbs the feature's outbound-HTTP
+  helpers** (`_fetch_related_thumb_bytes`, `is_allowed_thumb_url`) and
+  still retrofits the *original* `_fetch_thumbnail`, which the feature
+  deliberately left unhardened.
+- **Increment 1's re-export shim table** gains the shipped feature's
+  pinned names (`related.py` symbols, `_RELATED_EXECUTOR`,
+  `_run_discovery`, `_fetch_related_thumb_bytes`,
+  `_GUARANTEED_EVENT_TYPES`, `_RELATED_LINGER_CAP_SECONDS`).
+- **Increment 6 dedupes against the shipped hook glue:** the feature
+  already assembles a discovery seed at the first-info-dict tick and adds
+  `related_status` to the `url_metadata` emitters; increment 6's
+  `source_meta` capture and `thumb_id` follow-up land in the same call
+  sites and must preserve those additive fields.
+
+Sections below marked *(superseded — see Amendment)* are kept as the
+historical record of the pre-brainstorm design.
 
 ## Current state (verified 2026-07-01, v2.2.0)
 
@@ -175,8 +227,9 @@ pydantic-settings — zero new deps, zero PyInstaller risk), resolved with
 precedence **CLI flag > `AUDIO_DL_*` env > config file > defaults**. The
 config file is TOML read with stdlib `tomllib` from the per-OS config dir.
 Fields: `host, port, output_dir, max_parallel, allow_remote, dev_mode,
-persist (job store), db_path, log_path, features_related, lastfm_api_key
-(optional, user-supplied)`. The loopback-refusal gate moves into
+persist (job store), db_path, log_path, related_enabled` (default true;
+set false by `--no-related` — replaces the superseded `features_related`
+and `lastfm_api_key` fields, see Amendment). The loopback-refusal gate moves into
 `Settings.validate()` unchanged. Gated-content credentials are structurally
 absent — not fields at all.
 
@@ -189,10 +242,11 @@ land in their platform's *native* spot (logs go to `~/Library/Logs/
 audio-dl/` on darwin, the data dir elsewhere) — and `_thumb_cache_dir`
 is migrated onto it. No more ad-hoc path logic anywhere else.
 
-`Settings.lastfm_api_key` is a user-supplied secret and is **never
-serialized into any API response or request schema** — not in
-`GET /api/settings/defaults`, not anywhere; it is input-only via
-CLI/env/TOML.
+*(superseded — see Amendment; no Last.fm key exists in the shipped
+design)* `Settings.lastfm_api_key` was a user-supplied secret, **never
+serialized into any API response or request schema**. The rule it
+encoded stands for any future secret-shaped Settings field: input-only
+via CLI/env/TOML.
 
 ### Job persistence (`JobStore`)
 
@@ -392,7 +446,12 @@ documented extension point (`AUTH_MODE=none` is the only shipped value) —
 deliberately not built further. `_require_csrf` keeps its name and
 signature.
 
-## Worked example: related music/content links
+## Worked example: related music/content links *(superseded — see Amendment)*
+
+The concluded brainstorm replaced this design with
+[2026-07-01-related-content-discovery-design.md](2026-07-01-related-content-discovery-design.md);
+this section is kept as the historical record, and its final paragraph's
+escape hatch is exactly what happened.
 
 The end-to-end proof that the layering works. **Default OFF**
 (`features_related = false`) — this is a *privacy* decision, not a mere
@@ -443,11 +502,13 @@ add more.) The setting copy must say so.
 
 If the in-progress brainstorm redefines this feature, increments 1-6 are
 unaffected (see next section) and only this worked example is re-planned.
+*(It did, and it was — see Amendment.)*
 
 ## Roadmap robustness
 
-A separate feature brainstorm is running that may reshape priorities. The
-plan is built for that:
+A separate feature brainstorm was running that could reshape priorities
+(it has since concluded — see Amendment; the properties below held). The
+plan was built for that:
 
 - Increments 1-6 (package split, config/logging/egress hardening, store +
   eviction, SQLite persistence + shutdown, v2 surface + event bus,
@@ -491,7 +552,10 @@ companion plan doc:
   for one-way progress.
 - **Per-job SSE keepalive grace window for post-terminal pushes** —
   fragile timer hack; interacts badly with thumb-dir cleanup; the global
-  v2 channel is the structural answer.
+  v2 channel is the structural answer. *(Overtaken by events: the shipped
+  related-content design uses exactly this linger, bounded at ≤10 s. It
+  stays in v1; migrating `url_related` to the v2 channel and deleting the
+  linger is optional later polish — see Amendment.)*
 - **True mid-download resume across restarts** — yt-dlp fragment state
   isn't checkpointable from the outside; `interrupted` + re-queue is
   honest.
