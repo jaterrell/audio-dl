@@ -32,6 +32,7 @@ export function JobTracker({ jobId, onJobCreated }: { jobId: string; onJobCreate
           paths: u.paths,
           thumb_id: u.thumb_id,
           added_at: Date.now(),
+          related: u.related?.length ? u.related : undefined,
         });
         toast.success("Added to library", {
           description: u.title ?? u.url,
@@ -73,10 +74,22 @@ export function JobTracker({ jobId, onJobCreated }: { jobId: string; onJobCreate
       }
     }
 
+    // Visual teardown is unchanged: the card leaves the Now screen at 1.5s.
     setTimeout(() => {
       queryClient.removeQueries({ queryKey: ["job", jobId] });
-      untrackJob(jobId);
     }, 1500);
+    // untrackJob unmounts useJobEvents (closing its socket). When a completed
+    // URL's discovery is still pending, defer to a flat 10s — matching the
+    // server linger cap — so the late url_related can arrive and upsert.
+    // No early-exit drain: the tracker has no channel to observe event
+    // arrivals (the hook owns the socket, and late events route to history,
+    // not this query), and a lingering headless component costs nothing.
+    const hasPendingRelated = data.urls.some(
+      (u) => u.state === "completed" && u.related_status === "pending"
+    );
+    setTimeout(() => {
+      untrackJob(jobId);
+    }, hasPendingRelated ? 10_000 : 1500);
   }, [data, addItem, jobId, queryClient, onJobCreated]);
 
   return null;

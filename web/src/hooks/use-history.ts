@@ -35,6 +35,24 @@ function getSnapshot() {
 }
 function refresh() { cached = read(); }
 
+/**
+ * Patch the newest record matching `url`; no-op when none matches.
+ * Module-level (not hook-bound) so the SSE event handler can upsert
+ * late-arriving related items outside a React component ("Late results"
+ * in the related-content spec). Notifies subscribers so a mounted
+ * EmptyStage updates in place.
+ */
+export function updateItem(url: string, patch: Partial<HistoryItem>): void {
+  const items = read();
+  // addItem prepends, so the first match is the newest record.
+  const idx = items.findIndex((h) => h.url === url);
+  if (idx === -1) return;
+  items[idx] = { ...items[idx], ...patch };
+  write(items);
+  refresh();
+  notify();
+}
+
 export function useHistory() {
   const history = useSyncExternalStore(subscribe, getSnapshot, () => []);
 
@@ -51,5 +69,5 @@ export function useHistory() {
     notify();
   }, []);
 
-  return { history, addItem, removeItem };
+  return { history, addItem, removeItem, updateItem };
 }

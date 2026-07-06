@@ -6,6 +6,19 @@ export const ALL_FORMATS: Format[] = [...AUDIO_FORMATS, ...VIDEO_FORMATS];
 
 export type UrlStateName = "queued" | "running" | "completed" | "failed" | "cancelled";
 
+export type RelatedPlatform = "youtube" | "soundcloud";
+
+/** One related-track suggestion, as normalized by the backend. */
+export interface RelatedItem {
+  id: string;
+  title: string;
+  artist: string | null;
+  platform: RelatedPlatform;
+  webpage_url: string;
+  duration: number | null;
+  thumb_id: string | null;
+}
+
 export interface UrlState {
   url: string;
   media_format: Format;
@@ -18,6 +31,8 @@ export interface UrlState {
   thumb_id: string | null;
   title: string | null;
   uploader: string | null;
+  related_status?: string | null;
+  related?: RelatedItem[];
 }
 
 export interface JobSnapshot {
@@ -35,6 +50,7 @@ export interface HistoryItem {
   paths: string[];
   thumb_id: string | null;
   added_at: number;
+  related?: RelatedItem[];
 }
 
 export interface Settings {

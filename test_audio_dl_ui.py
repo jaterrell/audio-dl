@@ -2,12 +2,14 @@
 # pylint: disable=import-outside-toplevel,reimported,redefined-outer-name,protected-access,unused-argument
 # pylint: disable=too-many-lines
 """Tests for audio_dl_ui.py — validation, SSE, cancel, reveal, throttle."""
+import asyncio
 import collections
 import json
 import os
 import queue
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from unittest.mock import MagicMock, patch
@@ -2629,6 +2631,664 @@ class TestSelfcheck:
         self._patch(monkeypatch, tmp_path, deps=["ffmpeg is not installed or not on PATH."])
         problems = audio_dl_ui._selfcheck_problems()
         assert any("ffmpeg" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
+# Related-content discovery — state + protocol (spec 2026-07-01)
+# ---------------------------------------------------------------------------
+
+class TestRelatedStateAndProtocol:
+    def test_urlstate_defaults(self):
+        st = UrlState(url="https://x", media_format="mp3")
+        assert st.related_status is None
+        assert not st.related_items
+
+    def test_url_related_is_guaranteed_delivery(self):
+        from audio_dl_ui import _GUARANTEED_EVENT_TYPES, _put_with_overflow
+        assert "url_related" in _GUARANTEED_EVENT_TYPES
+        q: queue.Queue = queue.Queue(maxsize=1)
+        q.put_nowait({"type": "progress"})  # fill the queue
+        _put_with_overflow(q, {"type": "url_related", "status": "ready"})
+        # Oldest dropped, guaranteed event delivered.
+        drained = [q.get_nowait() for _ in range(q.qsize())]
+        assert any(e["type"] == "url_related" for e in drained)
+
+    def test_snapshot_carries_related_fields(self):
+        from audio_dl_ui import _build_snapshot
+        job = _fresh_job()
+        st = list(job.url_states.values())[0]
+        st.related_status = "ready"
+        st.related_items = [{"id": "n1", "title": "t", "artist": "a",
+                             "platform": "youtube", "webpage_url": "https://w",
+                             "duration": 60, "thumb_id": None}]
+        snap = _build_snapshot(job)
+        entry = snap["urls"][0]
+        assert entry["related_status"] == "ready"
+        assert entry["related_items"][0]["id"] == "n1"
+
+    def test_url_metadata_carries_related_status(self):
+        from audio_dl_ui import _make_progress_hook
+        job = _fresh_job()
+        urlst = list(job.url_states.values())[0]
+        urlst.related_status = "unsupported"  # pre-set; hook must echo current value
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        hook = _make_progress_hook(job, urlst)
+        hook({"status": "downloading", "downloaded_bytes": 0, "total_bytes": 100,
+              "info_dict": {"title": "T"}})
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        meta = [e for e in events if e["type"] == "url_metadata"]
+        assert meta and "related_status" in meta[0]
+
+
+class _FakeRelatedExecutor:
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, fn, *args):
+        self.submitted.append((fn, args))
+        return MagicMock()
+
+
+def _info(platform_url: str, **over) -> dict:
+    info = {"id": "dQw4w9WgXcQ", "title": "T", "uploader": "U",
+            "webpage_url": platform_url}
+    info.update(over)
+    return info
+
+
+class TestRelatedTrigger:
+    @pytest.fixture(autouse=True)
+    def _fake_executor(self, monkeypatch):
+        import audio_dl_ui as ui
+        fake = _FakeRelatedExecutor()
+        monkeypatch.setattr(ui, "_RELATED_EXECUTOR", fake)
+        app.state.related_enabled = True
+        yield fake
+
+    def _tick(self, job, urlst, info):
+        from audio_dl_ui import _make_progress_hook
+        hook = _make_progress_hook(job, urlst)
+        hook({"status": "downloading", "downloaded_bytes": 0,
+              "total_bytes": 100, "info_dict": info})
+
+    def test_supported_platform_sets_pending_and_submits_once(self, _fake_executor):
+        job = _fresh_job("https://youtu.be/dQw4w9WgXcQ")
+        urlst = list(job.url_states.values())[0]
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        self._tick(job, urlst, _info("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        assert urlst.related_status == "pending"
+        assert len(_fake_executor.submitted) == 1
+        fn, args = _fake_executor.submitted[0]
+        assert fn.__name__ == "_run_discovery"
+        seed = args[2]
+        assert seed == {"platform": "youtube", "id": "dQw4w9WgXcQ",
+                        "title": "T", "artist": "U",
+                        "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}
+        # url_metadata emitted on the same tick carries "pending"
+        meta = [e for e in (q.get_nowait() for _ in range(q.qsize()))
+                if e["type"] == "url_metadata"]
+        assert meta[0]["related_status"] == "pending"
+
+    def test_unsupported_platform_no_submit(self, _fake_executor):
+        job = _fresh_job("https://video.mediadelivery.net/play/1/x")
+        urlst = list(job.url_states.values())[0]
+        self._tick(job, urlst, _info("https://video.mediadelivery.net/play/1/x"))
+        assert urlst.related_status == "unsupported"
+        assert _fake_executor.submitted == []
+
+    def test_disabled_leaves_none(self, _fake_executor):
+        app.state.related_enabled = False
+        job = _fresh_job("https://youtu.be/dQw4w9WgXcQ")
+        urlst = list(job.url_states.values())[0]
+        self._tick(job, urlst, _info("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        assert urlst.related_status is None
+        assert _fake_executor.submitted == []
+
+    def test_missing_id_is_unsupported(self, _fake_executor):
+        job = _fresh_job("https://youtu.be/dQw4w9WgXcQ")
+        urlst = list(job.url_states.values())[0]
+        self._tick(job, urlst,
+                   _info("https://www.youtube.com/watch?v=dQw4w9WgXcQ", id=None))
+        assert urlst.related_status == "unsupported"
+        assert _fake_executor.submitted == []
+
+    def test_trigger_exception_never_fails_download(self, _fake_executor, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "detect_platform",
+                            MagicMock(side_effect=RuntimeError("boom")))
+        job = _fresh_job("https://youtu.be/dQw4w9WgXcQ")
+        urlst = list(job.url_states.values())[0]
+        # Must not raise — a raise here would fail the real download.
+        self._tick(job, urlst, _info("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        assert urlst.related_status == "error"
+        # Metadata capture still happened.
+        assert urlst.title == "T"
+
+    def test_submit_exception_never_fails_download(self, monkeypatch):
+        import audio_dl_ui as ui
+
+        class _RaisingExecutor:
+            def submit(self, fn, *args):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(ui, "_RELATED_EXECUTOR", _RaisingExecutor())
+        job = _fresh_job("https://youtu.be/dQw4w9WgXcQ")
+        urlst = list(job.url_states.values())[0]
+        # Must not raise — a raising submit here would fail the real download.
+        self._tick(job, urlst, _info("https://www.youtube.com/watch?v=dQw4w9WgXcQ"))
+        assert urlst.related_status == "error"
+
+
+class TestNoRelatedFlag:
+    def test_flag_disables(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "uvicorn", MagicMock())
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
+        monkeypatch.setattr(ui, "_preflight_or_exit", lambda h, p: None)
+        monkeypatch.setattr("sys.argv", ["audio-dl-ui", "--no-browser", "--no-related"])
+        ui.main()
+        assert app.state.related_enabled is False
+
+    def test_default_enabled(self, monkeypatch):
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "uvicorn", MagicMock())
+        monkeypatch.setattr(ui, "_check_dependencies_gui", lambda: None)
+        monkeypatch.setattr(ui, "_preflight_or_exit", lambda h, p: None)
+        monkeypatch.setattr("sys.argv", ["audio-dl-ui", "--no-browser"])
+        ui.main()
+        assert app.state.related_enabled is True
+
+
+def _ready_item(**over) -> dict:
+    item = {"id": "n1", "title": "Song", "artist": "Artist",
+            "platform": "youtube", "webpage_url": "https://www.youtube.com/watch?v=n1",
+            "duration": 60, "thumb_id": None,
+            "_thumb_src": "https://i.ytimg.com/vi/n1/hqdefault.jpg"}
+    item.update(over)
+    return item
+
+
+class TestRunDiscovery:
+    def _job_with_queue(self):
+        job = _fresh_job("https://youtu.be/dQw4w9WgXcQ")
+        urlst = list(job.url_states.values())[0]
+        urlst.related_status = "pending"
+        q: queue.Queue = queue.Queue()
+        with job.lock:
+            job.subscribers.append(q)
+        return job, urlst, q
+
+    SEED = {"platform": "youtube", "id": "dQw4w9WgXcQ", "title": "T",
+            "artist": "U", "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}
+
+    def test_ready_emits_url_related_with_thumb_ids(self, monkeypatch, tmp_path):
+        import audio_dl_ui as ui
+        job, urlst, q = self._job_with_queue()
+        monkeypatch.setattr(ui._related, "discover",
+                            lambda seed: ("ready", [_ready_item()]))
+        monkeypatch.setattr(ui, "_fetch_related_thumb_bytes",
+                            lambda url, timeout=None: b"\xff\xd8\xff\xe0jpeg")
+        monkeypatch.setattr(ui, "_thumb_cache_dir", lambda: tmp_path)
+        ui._run_discovery(job, urlst, self.SEED)
+        assert urlst.related_status == "ready"
+        assert len(urlst.related_items) == 1
+        item = urlst.related_items[0]
+        assert "_thumb_src" not in item
+        assert isinstance(item["thumb_id"], str) and len(item["thumb_id"]) == 40
+        events = [q.get_nowait() for _ in range(q.qsize())]
+        rel = [e for e in events if e["type"] == "url_related"]
+        assert len(rel) == 1
+        assert rel[0]["status"] == "ready"
+        assert rel[0]["url"] == urlst.url
+        assert rel[0]["items"][0]["thumb_id"] == item["thumb_id"]
+
+    def test_thumb_fetch_failure_leaves_null_thumb_id(self, monkeypatch):
+        import audio_dl_ui as ui
+        job, urlst, _ = self._job_with_queue()
+        monkeypatch.setattr(ui._related, "discover",
+                            lambda seed: ("ready", [_ready_item()]))
+        monkeypatch.setattr(ui, "_fetch_related_thumb_bytes",
+                            lambda url, timeout=None: None)
+        ui._run_discovery(job, urlst, self.SEED)
+        assert urlst.related_items[0]["thumb_id"] is None
+        assert urlst.related_status == "ready"
+
+    def test_cancelled_job_suppresses_emit(self, monkeypatch):
+        import audio_dl_ui as ui
+        job, urlst, q = self._job_with_queue()
+        job.cancelled = True
+        monkeypatch.setattr(ui._related, "discover",
+                            lambda seed: ("ready", [_ready_item()]))
+        ui._run_discovery(job, urlst, self.SEED)
+        assert urlst.related_status == "none"
+        assert q.empty()
+
+    def test_failed_url_suppresses_emit(self, monkeypatch):
+        import audio_dl_ui as ui
+        job, urlst, q = self._job_with_queue()
+        monkeypatch.setattr(ui._related, "discover",
+                            lambda seed: ("ready", [_ready_item()]))
+        monkeypatch.setattr(ui, "_fetch_related_thumb_bytes",
+                            lambda url, timeout=None: None)
+        urlst.status = "failed"
+        ui._run_discovery(job, urlst, self.SEED)
+        assert urlst.related_status == "none"
+        assert urlst.related_items == []
+        assert q.empty()
+
+    def test_failed_url_skips_thumb_prefetch(self, monkeypatch):
+        """Codex P2 (PR #60): a doomed result must not spend up to 15s of
+        CDN fetches — the suppression check below would drop it anyway."""
+        import audio_dl_ui as ui
+        job, urlst, q = self._job_with_queue()
+        monkeypatch.setattr(ui._related, "discover",
+                            lambda seed: ("ready", [_ready_item()]))
+        fetch = MagicMock(return_value=None)
+        monkeypatch.setattr(ui, "_fetch_related_thumb_bytes", fetch)
+        urlst.status = "failed"
+        ui._run_discovery(job, urlst, self.SEED)
+        fetch.assert_not_called()
+        assert urlst.related_status == "none"
+        assert urlst.related_items == []
+        assert q.empty()
+
+    def test_mid_discover_cancel_skips_thumb_prefetch(self, monkeypatch):
+        """Cancellation landing while discover() is still running must also
+        short-circuit the thumbnail loop, not just the pre-discover bail."""
+        import audio_dl_ui as ui
+        job, urlst, q = self._job_with_queue()
+
+        def cancel_then_return(seed):
+            job.cancelled = True  # cancel arrives mid-discover
+            return ("ready", [_ready_item()])
+
+        monkeypatch.setattr(ui._related, "discover", cancel_then_return)
+        fetch = MagicMock(return_value=None)
+        monkeypatch.setattr(ui, "_fetch_related_thumb_bytes", fetch)
+        ui._run_discovery(job, urlst, self.SEED)
+        fetch.assert_not_called()
+        assert urlst.related_status == "none"
+        assert q.empty()
+
+    def test_none_status_emits_empty_items(self, monkeypatch):
+        import audio_dl_ui as ui
+        job, urlst, q = self._job_with_queue()
+        monkeypatch.setattr(ui._related, "discover", lambda seed: ("none", []))
+        ui._run_discovery(job, urlst, self.SEED)
+        rel = [e for e in (q.get_nowait() for _ in range(q.qsize()))
+               if e["type"] == "url_related"]
+        assert rel[0]["status"] == "none"
+        assert rel[0]["items"] == []
+
+    def test_task_exception_resolves_error_never_raises(self, monkeypatch):
+        import audio_dl_ui as ui
+        job, urlst, q = self._job_with_queue()
+        monkeypatch.setattr(ui._related, "discover",
+                            MagicMock(side_effect=RuntimeError("boom")))
+        ui._run_discovery(job, urlst, self.SEED)  # must not raise
+        assert urlst.related_status == "error"
+        assert q.empty()  # error from an exception is silent (log line only)
+        assert any("related discovery failed" in e["text"] for e in urlst.log)
+
+    def test_thumbnail_budget_skips_items_past_deadline(self, monkeypatch, tmp_path):
+        """The 15s thumbnail-phase budget is the task's one hard time bound
+        (spec Providers/Thumbnails): once exceeded, remaining items keep
+        thumb_id None but the result still emits as ready."""
+        import audio_dl_ui as ui
+        job, urlst, _ = self._job_with_queue()
+        items = [
+            _ready_item(),
+            _ready_item(id="n2",
+                        webpage_url="https://www.youtube.com/watch?v=n2",
+                        _thumb_src="https://i.ytimg.com/vi/n2/hqdefault.jpg"),
+        ]
+        monkeypatch.setattr(ui._related, "discover", lambda seed: ("ready", items))
+        monkeypatch.setattr(ui, "_fetch_related_thumb_bytes",
+                            lambda url, timeout=None: b"\xff\xd8jpeg")
+        monkeypatch.setattr(ui, "_thumb_cache_dir", lambda: tmp_path)
+        # Fake clock (repo precedent: TestProgressHook fakes time.monotonic):
+        # call 1 = deadline calc (1000 → deadline 1015), call 2 = item-1
+        # check (inside budget), call 3 = item-2 check (past budget).
+        # Clamped, not exhausted, so stray background callers can't flake it.
+        seq = [1000.0, 1001.0, 1020.0]
+        calls = {"n": 0}
+        def fake_monotonic():
+            v = seq[min(calls["n"], len(seq) - 1)]
+            calls["n"] += 1
+            return v
+        monkeypatch.setattr(ui.time, "monotonic", fake_monotonic)
+        ui._run_discovery(job, urlst, self.SEED)
+        assert urlst.related_status == "ready"
+        thumb_ids = [i["thumb_id"] for i in urlst.related_items]
+        assert thumb_ids[0] is not None
+        assert thumb_ids[1] is None
+
+
+class TestFetchRelatedThumbBytes:
+    def test_disallowed_host_refused_without_network(self):
+        from audio_dl_ui import _fetch_related_thumb_bytes
+        # No httpx mock: if the allowlist check didn't run first, this would
+        # attempt a real request and (in CI) fail slowly. Refusal is instant.
+        assert _fetch_related_thumb_bytes("https://example.com/x.jpg") is None
+        assert _fetch_related_thumb_bytes("http://i.ytimg.com/x.jpg") is None
+
+    def test_fetches_allowed_host(self):
+        from audio_dl_ui import _fetch_related_thumb_bytes
+        with patch("audio_dl_ui.httpx.stream",
+                   return_value=_mock_httpx_stream(content=b"\xff\xd8jpeg")) as m:
+            data = _fetch_related_thumb_bytes("https://i.ytimg.com/vi/x/hq.jpg")
+        assert data == b"\xff\xd8jpeg"
+        # follow_redirects must be OFF so a 302 can't bypass the allowlist.
+        assert m.call_args.kwargs.get("follow_redirects") is False
+
+    def test_non_200_returns_none(self):
+        from audio_dl_ui import _fetch_related_thumb_bytes
+        with patch("audio_dl_ui.httpx.stream",
+                   return_value=_mock_httpx_stream(status_code=302)):
+            assert _fetch_related_thumb_bytes("https://i.ytimg.com/x.jpg") is None
+
+    def test_size_cap_returns_none(self):
+        from audio_dl_ui import _fetch_related_thumb_bytes
+        big = b"x" * (5 * 1024 * 1024 + 1)
+        with patch("audio_dl_ui.httpx.stream",
+                   return_value=_mock_httpx_stream(content=big)):
+            assert _fetch_related_thumb_bytes("https://i.ytimg.com/x.jpg") is None
+
+
+class TestSseLinger:
+    """Post-``job_completed`` SSE linger in ``_events_iter`` (spec "Late
+    results"): after forwarding ``job_completed`` the generator holds the
+    stream open while any URL whose download COMPLETED still has discovery
+    in flight (``related_status == "pending"``), forwards the late
+    ``url_related`` verbatim, and closes — bounded by
+    ``_RELATED_LINGER_CAP_SECONDS`` and by ``job.cancelled``.
+
+    These drive ``_events_iter`` directly rather than through ``TestClient``.
+    Starlette 1.0.0's ``TestClient`` fully buffers a ``StreamingResponse``
+    (verified: a generator that yields with delays between chunks delivers
+    every chunk only after it returns), so a browser-style test cannot
+    observe ``job_completed`` mid-stream to coordinate a late ``url_related``,
+    and any thread-timed variant races the linger's predicate check against
+    discovery flipping ``related_status``. Driving the async generator on a
+    single event loop makes the ordering deterministic: the linger's
+    predicate check is synchronous and runs to the loop's ``get`` await
+    before any concurrently-scheduled emit can mutate state.
+    """
+
+    def _register_job(self, url, *, status, related_status):
+        job_id = f"linger-{uuid.uuid4().hex[:8]}"
+        job = JobState(
+            id=job_id, media_format="mp3", output_dir="/tmp",
+            playlist=False, force=False, fragments=4,
+            url_states={url: UrlState(url=url, media_format="mp3",
+                                      status=status,
+                                      related_status=related_status)},
+        )
+        JOBS[job_id] = job
+        return job
+
+    @staticmethod
+    async def _next(gen):
+        """Pull one SSE ``data:`` event off the generator as a dict."""
+        line = await anext(gen)
+        assert line.startswith("data: "), f"unexpected SSE line: {line!r}"
+        return json.loads(line[len("data: "):])
+
+    @classmethod
+    async def _advance_into_wait(cls, gen):
+        """Start pulling the next event and yield control once so the
+        generator runs its synchronous checks (the ``job.completed`` guard,
+        or the linger predicate) and blocks in its ``queue.get`` await. The
+        returned future resolves once an event is emitted — modeling the
+        DOMINANT production path, where the generator is parked in its
+        ``get`` when events arrive. Not a hard guarantee: two
+        microsecond-scale races are inherent to the design (an emit landing
+        in the ``job.completed`` guard window while the generator is paused
+        at the snapshot yield; a discovery resolution stranding its queued
+        event between the ``job_completed`` forward and the first predicate
+        check). Emitting BEFORE this helper runs would deterministically hit
+        the first of those windows and close the stream early."""
+        pull = asyncio.ensure_future(cls._next(gen))
+        await asyncio.sleep(0)
+        return pull
+
+    @staticmethod
+    def _job_completed(job):
+        return {"type": "job_completed", "job_id": job.id,
+                "summary": {"completed": 1, "failed": 0}}
+
+    def test_linger_forwards_late_url_related(self):
+        """Download finished, discovery resolves AFTER job_completed: the
+        linger holds the stream open and forwards the late url_related, then
+        closes."""
+        import audio_dl_ui as ui
+        job = self._register_job("https://youtu.be/dQw4w9WgXcQ",
+                                 status="completed", related_status="pending")
+        urlst = list(job.url_states.values())[0]
+        url_related = {"type": "url_related", "job_id": job.id, "url": urlst.url,
+                       "status": "ready", "items": [_ready_item()]}
+
+        async def scenario():
+            gen = ui._events_iter(job.id)
+            try:
+                assert (await self._next(gen))["type"] == "job_snapshot"
+                pull = await self._advance_into_wait(gen)
+                ui._emit(job, self._job_completed(job))
+                assert (await pull)["type"] == "job_completed"
+                # Generator now enters the linger: its predicate check
+                # (completed & pending -> True) runs before the get() await, so
+                # it is blocked waiting for a late event. ONLY THEN does
+                # discovery resolve (status flip, then emit) — production order.
+                pull = await self._advance_into_wait(gen)
+                urlst.related_status = "ready"
+                ui._emit(job, url_related)
+                late = await pull
+                assert late["type"] == "url_related"
+                assert late["status"] == "ready"
+                assert late["items"][0]["id"] == "n1"
+                # Predicate now false -> stream returns.
+                with pytest.raises(StopAsyncIteration):
+                    await anext(gen)
+            finally:
+                await gen.aclose()
+                JOBS.pop(job.id, None)
+
+        asyncio.run(scenario())
+
+    def test_no_pending_closes_immediately(self):
+        """A completed URL that never started discovery (related_status None)
+        must NOT hold the stream open."""
+        import audio_dl_ui as ui
+        job = self._register_job("https://youtu.be/BBB",
+                                 status="completed", related_status=None)
+
+        async def scenario():
+            gen = ui._events_iter(job.id)
+            try:
+                assert (await self._next(gen))["type"] == "job_snapshot"
+                pull = await self._advance_into_wait(gen)
+                ui._emit(job, self._job_completed(job))
+                assert (await pull)["type"] == "job_completed"
+                # No completed+pending URL -> no linger, immediate close.
+                with pytest.raises(StopAsyncIteration):
+                    await anext(gen)
+            finally:
+                await gen.aclose()
+                JOBS.pop(job.id, None)
+
+        asyncio.run(scenario())
+
+    def test_failed_url_with_inflight_discovery_does_not_stall(self):
+        """Discovery was seeded (related_status pending) but the download
+        FAILED: the predicate requires status=='completed', so the close is
+        prompt and no url_related is forwarded even if one were queued."""
+        import audio_dl_ui as ui
+        job = self._register_job("https://youtu.be/CCC",
+                                 status="failed", related_status="pending")
+        urlst = list(job.url_states.values())[0]
+
+        async def scenario():
+            gen = ui._events_iter(job.id)
+            try:
+                assert (await self._next(gen))["type"] == "job_snapshot"
+                pull = await self._advance_into_wait(gen)
+                ui._emit(job, self._job_completed(job))
+                assert (await pull)["type"] == "job_completed"
+                # A stray url_related for the failed URL would be a bug; even
+                # if enqueued, the failed status keeps the predicate false so
+                # the generator returns without draining it.
+                ui._emit(job, {"type": "url_related", "job_id": job.id,
+                               "url": urlst.url, "status": "none", "items": []})
+                with pytest.raises(StopAsyncIteration):
+                    await anext(gen)
+            finally:
+                await gen.aclose()
+                JOBS.pop(job.id, None)
+
+        asyncio.run(scenario())
+
+    def test_linger_closes_at_cap_when_discovery_never_resolves(self, monkeypatch):
+        """Pathological provider stall on a COMPLETED url: with discovery
+        never resolving, the linger must close at the cap (not hang) with no
+        url_related. Cap shrunk via the module constant so the test is fast."""
+        import audio_dl_ui as ui
+        monkeypatch.setattr(ui, "_RELATED_LINGER_CAP_SECONDS", 0.3)
+        job = self._register_job("https://youtu.be/DDD",
+                                 status="completed", related_status="pending")
+
+        async def scenario():
+            gen = ui._events_iter(job.id)
+            try:
+                assert (await self._next(gen))["type"] == "job_snapshot"
+                pull = await self._advance_into_wait(gen)
+                ui._emit(job, self._job_completed(job))
+                assert (await pull)["type"] == "job_completed"
+                start = time.monotonic()
+                # related_status stays "pending" forever; the cap must bound it.
+                with pytest.raises(StopAsyncIteration):
+                    await anext(gen)
+                elapsed = time.monotonic() - start
+                assert elapsed < 3, f"cap did not bound the linger ({elapsed:.1f}s)"
+            finally:
+                await gen.aclose()
+                JOBS.pop(job.id, None)
+
+        asyncio.run(scenario())
+
+    def test_cancel_ends_linger_early(self):
+        """A completed+pending URL would normally hold the stream, but a
+        cancel flag must end the linger on the next predicate check."""
+        import audio_dl_ui as ui
+        job = self._register_job("https://youtu.be/EEE",
+                                 status="completed", related_status="pending")
+
+        async def scenario():
+            gen = ui._events_iter(job.id)
+            try:
+                assert (await self._next(gen))["type"] == "job_snapshot"
+                pull = await self._advance_into_wait(gen)
+                ui._emit(job, self._job_completed(job))
+                assert (await pull)["type"] == "job_completed"
+                job.cancelled = True
+                with pytest.raises(StopAsyncIteration):
+                    await anext(gen)
+            finally:
+                await gen.aclose()
+                JOBS.pop(job.id, None)
+
+        asyncio.run(scenario())
+
+    # pylint: disable-next=too-many-locals
+    def test_end_to_end_linger_over_http(self, tmp_path, monkeypatch):
+        """Full-stack regression guard the direct-drive tests can't give:
+        POST /jobs -> real worker -> metadata tick -> real _RELATED_EXECUTOR
+        -> real _run_discovery -> _emit into the lingering stream. A break in
+        the trigger/executor wiring (url_related never emitted) would leave
+        every direct-drive test green while the linger silently rode out its
+        cap; this test fails on it.
+
+        No mid-stream coordination (the TestClient buffers the whole
+        response — see class docstring). Determinism comes from two
+        server-side observations instead:
+
+        - the worker is gated in sanitize_url until the SSE subscriber is
+          REGISTERED (polling job.subscribers — server state, visible
+          despite client buffering), so job_completed can't precede the
+          subscriber and close the stream at the snapshot;
+        - discovery resolves on a 0.75s timer, while the download side
+          reaches job_completed in milliseconds once _run_one's 1.5s
+          live-thumb poll is defeated by pre-creating the thumb file. The
+          ~0.75s gap guarantees url_related lands strictly after
+          job_completed, inside the (shrunken, 3s) linger window.
+        """
+        import audio_dl_ui as ui
+        raw_url = "https://youtu.be/lingerE2E"
+        original_sanitize = ui.sanitize_url
+
+        def gated_sanitize(u):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                job = next((j for j in JOBS.values() if u in j.url_states),
+                           None)
+                if job is not None and job.subscribers:
+                    # Defeat _run_one's 1.5s thumb poll: pre-create the live
+                    # thumb so the download path stays far quicker than the
+                    # discovery timer.
+                    thumb_dir = Path(ui._thumb_dir(job.id))
+                    thumb_dir.mkdir(parents=True, exist_ok=True)
+                    (thumb_dir / "0.jpg").write_bytes(b"\xff\xd8\xff\xe0jpg")
+                    break
+                time.sleep(0.01)
+            return original_sanitize(u)
+
+        monkeypatch.setattr(ui, "sanitize_url", gated_sanitize)
+
+        def fake_discover(_seed):
+            threading.Event().wait(0.75)  # resolve AFTER job_completed
+            return ("ready", [_ready_item()])
+
+        monkeypatch.setattr(ui._related, "discover", fake_discover)
+        monkeypatch.setattr(ui, "_fetch_related_thumb_bytes",
+                            lambda url, timeout=None: None)
+        monkeypatch.setattr(ui, "_thumb_cache_dir", lambda: tmp_path)
+        monkeypatch.setattr(ui, "_RELATED_LINGER_CAP_SECONDS", 3.0)
+
+        info = {"id": "dQw4w9WgXcQ", "title": "T", "uploader": "U",
+                "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}
+
+        def fake_download(_url, *, progress_hooks=None, **_kwargs):
+            progress_hooks[0]({"status": "downloading", "downloaded_bytes": 10,
+                               "total_bytes": 100, "info_dict": dict(info)})
+            return [str(tmp_path / "t.mp3")]
+
+        monkeypatch.setattr(ui, "download_media", fake_download)
+        app.state.related_enabled = True
+        body = _valid_body(output_dir=str(tmp_path))
+        body["urls"] = [{"url": raw_url, "format": "mp3"}]
+        job_id = client.post("/jobs", json=body,
+                             headers=_csrf_headers()).json()["job_id"]
+
+        start = time.monotonic()
+        events = []
+        with client.stream("GET", f"/jobs/{job_id}/events{_csrf_query()}",
+                           timeout=15) as resp:
+            for line in resp.iter_lines():
+                if line.startswith("data: "):
+                    events.append(json.loads(line[len("data: "):]))
+        elapsed = time.monotonic() - start
+
+        types = [e["type"] for e in events]
+        assert "job_completed" in types
+        assert "url_related" in types, f"discovery result never emitted: {types}"
+        assert types.index("url_related") > types.index("job_completed")
+        late = next(e for e in events if e["type"] == "url_related")
+        assert late["status"] == "ready"
+        assert late["items"][0]["id"] == "n1"
+        assert elapsed < 10, f"stream stalled ({elapsed:.1f}s)"
 
 
 # ---------------------------------------------------------------------------

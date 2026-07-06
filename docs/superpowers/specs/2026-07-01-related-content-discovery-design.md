@@ -187,13 +187,14 @@ Live-probed against yt-dlp 2026.03.17 (2026-07-01):
   do not use it for linking), `thumbnails[]` (10 `sndcdn.com` size variants).
 - **SoundCloud `/recommended`:** extractor verified present
   (`SoundcloudRelatedIE`, pattern `…/(albums|sets|recommended)`); entry shape
-  expected to match `scsearch` entries (same extractor family). ☐ **Gating
-  pre-requisite:** the probe of this URL form was not completed — the
-  implementation must live-probe `/recommended` and capture the fixture
-  *before* enabling the SoundCloud native path. If the shape doesn't pan
-  out, SoundCloud seeds ship cross-platform-only (`ytsearch8:{artist}` may
-  fill all 8 slots — the selection rules already allow it) and the native
-  path moves to the follow-ups list.
+  expected to match `scsearch` entries (same extractor family). ☑ **Gating
+  pre-requisite (resolved 2026-07-03):** live-probed and the shape did
+  **not** pan out — `extract_flat` entries are bare url-reference stubs
+  (`_type`/`ie_key`/`id`/`title`/`url` only), missing `webpage_url`,
+  `uploader`, `artists`, `duration`, and `thumbnails`. SoundCloud seeds ship
+  cross-platform-only (`ytsearch8:{artist}` fills all 8 slots — the
+  selection rules already allow it); the native path moves to the
+  follow-ups list.
 
 Normalized item (wire + state shape):
 
@@ -590,3 +591,12 @@ docs to `origin/main`, implementation-only PR, squash-merge, `reset --hard`.
 - UI settings toggle mirroring `--no-related`.
 - Strips for non-staged URLs in multi-URL batches.
 - SSRF hardening for the pre-existing job-thumbnail fetch path.
+- SoundCloud native `/recommended` path: the 2026-07-03 gating probe
+  (Task 2) found `extract_flat` entries for `/recommended` come back as
+  bare url-reference stubs (`_type`/`ie_key`/`id`/`title`/`url` only, no
+  `webpage_url`/`uploader`/`artists`/`duration`/`thumbnails`) — it does not
+  match the `scsearch` shape the native path needs. The native path ships
+  disabled (`SC_NATIVE_ENABLED = False`); SoundCloud seeds get
+  cross-platform-only discovery (`ytsearch8:{artist}`) per the selection
+  rules. Revisit if yt-dlp's Soundcloud extractor changes this shape, or
+  by resolving each stub through a second (slower) non-flat extraction.

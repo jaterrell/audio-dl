@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.5.0 — "More like this": related-track discovery
+
+While a download runs, the web UI now finds tracks you might like next and shows them as a thumbnail strip under the player. Discovery rides yt-dlp — YouTube Mix radio for YouTube seeds, SoundCloud's own recommendations plus a cross-platform artist search for SoundCloud seeds — so there are no API keys and no new dependencies. Each suggestion links out to its source and queues in one click, and the results follow the track into your library history, so the idle screen keeps showing "More like this" for your latest download.
+
+### Added
+- Related-track discovery in the web UI: while a URL downloads, the server discovers related tracks on YouTube (Mix radio) and SoundCloud (recommended + a cross-platform artist search) via yt-dlp, with no API keys and no new dependencies. (#60)
+- A "More like this" thumbnail strip under the player: each related track links out to its source and queues for download in one click. (#60)
+- Related results persist onto library history and reappear on the idle screen for the most recent download; results that arrive after the download finishes are delivered through a short SSE linger and upserted in place. (#60)
+- `--no-related` flag on `audio-dl-ui` to disable all discovery — no extra YouTube/SoundCloud queries or thumbnail fetches during downloads. (#60)
+
 ## v2.4.0 — The server now quits when you close the browser
 
 Closing the last web-UI window used to leave the server (or the whole `.app`) running in the background forever — invisible until the next launch died with "address already in use". The UI now holds a lightweight presence connection per tab, and the server shuts itself down cleanly once every window has been closed for ~10 seconds. Downloads in flight always finish first, reloads and navigation don't count as closing, and a fresh launch takes over the port like you'd expect.

@@ -48,10 +48,13 @@ from pydantic import BaseModel
 from audio_dl import (
     ALL_FORMATS,
     _check_dependencies,
+    detect_platform,
     download_media,
     sanitize_url,
     __version__,
 )
+from audio_dl_ui.related import _pick_thumbnail_url
+from audio_dl_ui import related as _related
 
 # uvicorn is an optional dep (UI extra). Imported lazily in main() to avoid
 # ImportError when the package is installed without [ui]. Exposed as a
@@ -109,6 +112,13 @@ class UrlState:  # pylint: disable=too-many-instance-attributes
     metadata_emitted: bool = False
     # v2.0 Task 6 — stable thumb_id written to the persistent cache on completion.
     thumb_id: str | None = None
+    # Related-content discovery (spec 2026-07-01):
+    # None       — never started (disabled, or failed before first metadata tick)
+    # "pending"  — discovery task submitted, unresolved
+    # "ready" | "none" | "error" | "unsupported" — resolved outcomes.
+    # Every task exit path moves the status off "pending".
+    related_status: str | None = None
+    related_items: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -154,30 +164,126 @@ JOBS: dict[str, JobState] = {}
 # directly with their own ThreadPoolExecutor.
 _GLOBAL_EXECUTOR: ThreadPoolExecutor | None = None
 
+# Related-content discovery pool: deliberately small and separate from
+# _GLOBAL_EXECUTOR so a slow platform search can never starve download
+# workers. Two workers bound total discovery egress regardless of batch
+# size. Lazily created (tests monkeypatch _RELATED_EXECUTOR directly).
+_RELATED_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _related_executor() -> ThreadPoolExecutor:
+    """Lazily create the 2-worker discovery pool (mirrors _GLOBAL_EXECUTOR's
+    pytest-friendly lazy init)."""
+    global _RELATED_EXECUTOR  # pylint: disable=global-statement
+    if _RELATED_EXECUTOR is None:
+        _RELATED_EXECUTOR = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="related"
+        )
+    return _RELATED_EXECUTOR
+
+
+def _submit_related_discovery(job: "JobState", url_state: "UrlState", seed: dict) -> None:
+    """Hand the discovery task to the pool. Wrapped: called from the progress
+    hook, which must never raise (it would abort the real download) — a
+    submit failure just downgrades the status to "error"."""
+    try:
+        executor = _RELATED_EXECUTOR or _related_executor()
+        executor.submit(_run_discovery, job, url_state, seed)
+    except Exception:  # pylint: disable=broad-except
+        url_state.related_status = "error"
+
+
+def _run_discovery(job: "JobState", url_state: "UrlState", seed: dict) -> None:
+    """Discovery task body — runs on _RELATED_EXECUTOR, never raises.
+
+    Sequence: bail early on cancel → discover via related.py → prefetch
+    thumbnails into the persistent cache (15 s phase budget) → suppress if
+    the job was cancelled or this URL's download failed → record state and
+    emit exactly one ``url_related``. Every exit path moves
+    ``related_status`` off "pending" (the SSE linger depends on that)."""
+    try:
+        if job.cancelled:
+            url_state.related_status = "none"
+            return
+        status, items = _related.discover(seed)
+
+        # Thumbnail phase: the one hard time bound in the task (the
+        # provider socket_timeout is per-operation, not wall-clock).
+        deadline = time.monotonic() + 15.0
+        for item in items:
+            src = item.pop("_thumb_src", None)
+            if not src:
+                continue
+            # Doomed result (cancelled mid-discover or download failed) —
+            # don't spend CDN fetches; the suppression block below drops the
+            # items anyway. Checked per-iteration, after the unconditional
+            # pop, so _thumb_src is still stripped from every item.
+            if job.cancelled or url_state.status in ("failed", "cancelled"):
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                continue
+            # Clamp the per-fetch HTTP timeout to what's left of the phase
+            # budget: checking the deadline only before the fetch is not
+            # enough, since a fetch started just under the deadline could
+            # otherwise burn its full socket timeout and overrun the 15s cap.
+            data = _fetch_related_thumb_bytes(src, timeout=min(5.0, remaining))
+            if data:
+                try:
+                    item["thumb_id"] = _persist_thumb(src, data)
+                except OSError:
+                    pass  # cache write failure → gradient fallback tile
+
+        # Suppression: no strip for cancelled jobs or failed downloads —
+        # and no linger stall (status resolves off "pending" regardless).
+        if job.cancelled or url_state.status in ("failed", "cancelled"):
+            url_state.related_status = "none"
+            url_state.related_items = []
+            return
+
+        url_state.related_status = status
+        url_state.related_items = items if status == "ready" else []
+        _emit(job, {
+            "type": "url_related",
+            "job_id": job.id,
+            "url": url_state.url,
+            "status": status,
+            "items": url_state.related_items,
+        })
+    except Exception as e:  # pylint: disable=broad-except
+        url_state.related_status = "error"
+        url_state.related_items = []
+        url_state.log.append({
+            "ts": time.time(), "level": "warning",
+            "text": f"related discovery failed: {e}",
+        })
+
 
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
 
-# Terminal events must always be delivered even if the queue is full;
+# Guaranteed events must always be delivered even if the queue is full;
 # progress events can be dropped (they're throttled to ~5/sec/URL upstream
 # and a missed sample is harmless). ``job_snapshot`` is delivered out-of-band
 # (yielded directly by _events_iter before draining the queue) so it doesn't
-# appear here.
-_TERMINAL_EVENT_TYPES = frozenset({
+# appear here. (Renamed from _TERMINAL_EVENT_TYPES when the one-shot
+# url_related event joined — "terminal" no longer described the contents.)
+_GUARANTEED_EVENT_TYPES = frozenset({
     "url_started", "url_completed", "url_failed", "job_completed",
+    "url_related",
 })
 
 
 def _put_with_overflow(q: "queue.Queue[dict]", event: dict) -> None:
     """Push one event onto one subscriber's queue with overflow handling.
 
-    Terminal events take a small block-with-timeout so a momentarily-full
+    Guaranteed events take a small block-with-timeout so a momentarily-full
     queue still gets the lifecycle signal. If the timeout expires, drop the
-    oldest event to make room — silently losing a terminal event would hang
+    oldest event to make room — silently losing a guaranteed event would hang
     the client UI. Progress events use put_nowait and drop on Full.
     """
-    if event.get("type") in _TERMINAL_EVENT_TYPES:
+    if event.get("type") in _GUARANTEED_EVENT_TYPES:
         try:
             q.put(event, timeout=1.0)
             return
@@ -214,27 +320,6 @@ def _should_keep_log(level: str, text: str) -> bool:
         return False
     # level == "info" (or anything else): keep only known phase markers
     return any(text.startswith(p) for p in _LOG_KEEP_PREFIXES)
-
-
-def _pick_thumbnail_url(info: dict) -> str | None:
-    """Pick a reasonable thumbnail URL from a yt-dlp info dict.
-
-    Prefers the largest thumbnail with width <= 480 (good for our 120px
-    card thumbs without retina-blur). Falls back to the smallest width
-    if none are <= 480, then the singular ``thumbnail`` field, then None.
-    """
-    thumbs = info.get("thumbnails") or []
-    sized = [t for t in thumbs if isinstance(t.get("width"), int)]
-    if sized:
-        small = [t for t in sized if t["width"] <= 480]
-        if small:
-            chosen = max(small, key=lambda t: t["width"])
-        else:
-            chosen = min(sized, key=lambda t: t["width"])
-        return chosen.get("url")
-    if thumbs:
-        return thumbs[0].get("url")
-    return info.get("thumbnail") or None
 
 
 _THUMB_ROOT = os.path.join(tempfile.gettempdir(), "audio-dl-thumbs")
@@ -305,6 +390,36 @@ def _fetch_thumbnail(job_id: str, url_idx: int, src_url: str) -> bool:
             return False
     except Exception:  # pylint: disable=broad-except
         return False
+
+
+def _fetch_related_thumb_bytes(src_url: str, timeout: float = 5.0) -> bytes | None:
+    """Hardened fetch for related-item artwork. Returns raw bytes or None.
+
+    Unlike ``_fetch_thumbnail`` (which trusts yt-dlp's own resolved thumb
+    for the download in progress), related-item thumbnails come from many
+    search-result entries — so this path enforces https + a host allowlist
+    and refuses redirects (a 302 would otherwise bypass the allowlist).
+    ``timeout`` is the per-fetch HTTP budget; the caller clamps it to the
+    remaining thumbnail-phase budget so a slow CDN can't overrun the wall
+    clock. Never raises."""
+    if not _related.is_allowed_thumb_url(src_url):
+        return None
+    try:
+        with httpx.stream(
+            "GET", src_url, timeout=timeout, follow_redirects=False
+        ) as resp:
+            if resp.status_code != 200:
+                return None
+            total = 0
+            chunks: list[bytes] = []
+            for chunk in resp.iter_bytes():
+                total += len(chunk)
+                if total > _THUMB_MAX_BYTES:
+                    return None
+                chunks.append(chunk)
+        return b"".join(chunks)
+    except Exception:  # pylint: disable=broad-except
+        return None
 
 
 class _YDLLogger:
@@ -406,6 +521,45 @@ def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], 
             url_state.uploader = info.get("uploader")
             url_state.duration = info.get("duration")
             url_state.metadata_emitted = True
+
+            # Related-content discovery trigger (spec 2026-07-01). This runs
+            # in the hot download path (yt-dlp calls hooks in-band), so it is
+            # wrapped: an exception here would otherwise be caught by
+            # _run_one's broad handler and fail the REAL download.
+            #
+            # Only the *status* is resolved here (and the seed stashed in
+            # related_seed); the discovery task is submitted in (c2), AFTER
+            # the url_metadata event below. A fast _run_discovery could
+            # otherwise emit url_related before url_metadata carries
+            # related_status="pending", and the client's later url_metadata
+            # handler would downgrade the already-resolved status back to
+            # "pending" — stalling teardown until the SSE linger cap.
+            related_seed = None
+            try:
+                if getattr(app.state, "related_enabled", True):
+                    seed = {
+                        "platform": detect_platform(
+                            info.get("webpage_url")
+                            or url_state.sanitized_url
+                            or url_state.url
+                        ),
+                        "id": info.get("id"),
+                        "title": info.get("title"),
+                        "artist": _related.resolve_artist(info),
+                        "webpage_url": info.get("webpage_url"),
+                    }
+                    if (
+                        seed["platform"] in _related.SUPPORTED_PLATFORMS
+                        and seed["id"]
+                    ):
+                        url_state.related_status = "pending"
+                        related_seed = seed
+                    else:
+                        url_state.related_status = "unsupported"
+                # disabled → related_status stays None (no event, no strip)
+            except Exception:  # pylint: disable=broad-except
+                url_state.related_status = "error"
+
             _emit(job, {
                 "type": "url_metadata",
                 "job_id": job.id,
@@ -414,7 +568,15 @@ def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], 
                 "uploader": url_state.uploader,
                 "duration": url_state.duration,
                 "thumbnail_ready": False,
+                "related_status": url_state.related_status,
             })
+
+            # Submit only now that url_metadata (carrying "pending") has been
+            # emitted, so the worker thread can't race a url_related ahead of
+            # it. related_seed is None unless the status resolved to "pending".
+            if related_seed is not None:
+                _submit_related_discovery(job, url_state, related_seed)
+
             thumb_src = _pick_thumbnail_url(info)
             if thumb_src:
                 idx = _url_idx(job, url_state.url)
@@ -430,6 +592,7 @@ def _make_progress_hook(job: JobState, url_state: UrlState) -> Callable[[dict], 
                             "uploader": url_state.uploader,
                             "duration": url_state.duration,
                             "thumbnail_ready": True,
+                            "related_status": url_state.related_status,
                         })
 
                 threading.Thread(target=_do_fetch, daemon=True).start()
@@ -775,10 +938,17 @@ def _build_snapshot(job: JobState) -> dict:
                 "phase": s.phase,
                 "log": list(s.log),
                 "thumb_id": s.thumb_id,  # v2.0 Task 6
+                "related_status": s.related_status,
+                "related_items": list(s.related_items),
             }
             for s in job.url_states.values()
         ],
     }
+
+
+# Late-results SSE linger cap (spec "Late results"). Module-level so tests
+# can shrink it instead of waiting out the real window.
+_RELATED_LINGER_CAP_SECONDS = 10.0
 
 
 async def _events_iter(job_id: str):
@@ -829,6 +999,27 @@ async def _events_iter(job_id: str):
             yield f"data: {json.dumps(event)}\n\n"
             last_keepalive = time.monotonic()
             if event.get("type") == "job_completed":
+                # Late-results linger (spec 2026-07-01, "Late results"):
+                # short-track downloads can finish before their 2-6s
+                # discovery task. Hold the stream open while any URL whose
+                # download COMPLETED still has discovery in flight —
+                # explicitly not None (never started) and not failed/
+                # cancelled URLs (their results are suppressed) — capped,
+                # ended early on cancel.
+                deadline = time.monotonic() + _RELATED_LINGER_CAP_SECONDS
+                while (
+                    not job.cancelled
+                    and time.monotonic() < deadline
+                    and any(
+                        s.status == "completed" and s.related_status == "pending"
+                        for s in job.url_states.values()
+                    )
+                ):
+                    try:
+                        late = await asyncio.to_thread(sub_queue.get, True, 0.5)
+                    except queue.Empty:
+                        continue
+                    yield f"data: {json.dumps(late)}\n\n"
                 return
     finally:
         with job.lock:
@@ -1371,6 +1562,11 @@ def main():  # pylint: disable=too-many-statements
         "--allow-remote", action="store_true",
         help="Allow binding to non-loopback hosts (LAN/public). Default refuses for safety.",
     )
+    parser.add_argument(
+        "--no-related", action="store_true",
+        help="Disable related-content discovery (no extra YouTube/SoundCloud "
+             "queries or thumbnail fetches during downloads).",
+    )
     def _max_parallel(value: str) -> int:
         try:
             n = int(value)
@@ -1422,6 +1618,9 @@ def main():  # pylint: disable=too-many-statements
 
     # Stash max_parallel for the API to read.
     app.state.max_parallel = args.max_parallel
+
+    # Related-content discovery kill switch (default on; see spec decision #8).
+    app.state.related_enabled = not args.no_related
 
     # v1.8: initialize the process-wide download worker pool. URLs from
     # every submission share this one executor, so --max-parallel is a

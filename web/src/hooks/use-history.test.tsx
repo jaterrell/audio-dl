@@ -41,4 +41,37 @@ describe("useHistory", () => {
     act(() => result.current.removeItem("https://a"));
     expect(result.current.history.map((h) => h.url)).toEqual(["https://b"]);
   });
+
+  it("updateItem patches the newest record matching the url", () => {
+    const { result } = renderHook(() => useHistory());
+    act(() => result.current.addItem(mk("https://a", 1)));
+    act(() => result.current.addItem(mk("https://b", 2)));
+    const related = [{
+      id: "n1", title: "Song", artist: "Artist", platform: "youtube" as const,
+      webpage_url: "https://www.youtube.com/watch?v=n1",
+      duration: 60, thumb_id: null,
+    }];
+    act(() => result.current.updateItem("https://a", { related }));
+    const a = result.current.history.find((h) => h.url === "https://a")!;
+    expect(a.related).toEqual(related);
+    // Other records untouched.
+    expect(result.current.history.find((h) => h.url === "https://b")!.related)
+      .toBeUndefined();
+  });
+
+  it("updateItem no-ops when no record matches", () => {
+    const { result } = renderHook(() => useHistory());
+    act(() => result.current.addItem(mk("https://a", 1)));
+    act(() => result.current.updateItem("https://zzz", { title: "X" }));
+    expect(result.current.history).toHaveLength(1);
+    expect(result.current.history[0].title).toBeNull();
+  });
+
+  it("module-level updateItem notifies mounted subscribers", async () => {
+    const { updateItem } = await import("./use-history");
+    const { result } = renderHook(() => useHistory());
+    act(() => result.current.addItem(mk("https://a", 1)));
+    act(() => updateItem("https://a", { title: "Patched" }));
+    expect(result.current.history[0].title).toBe("Patched");
+  });
 });

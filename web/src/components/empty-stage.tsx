@@ -1,4 +1,5 @@
 import { AlbumArt } from "./album-art";
+import { RelatedStrip } from "./related-strip";
 import type { HistoryItem } from "@/lib/types";
 
 interface EmptyStageProps {
@@ -16,17 +17,20 @@ export function EmptyStage({ latest }: EmptyStageProps) {
     );
   }
   return (
-    <div className="grid place-items-center px-8 pt-7 pb-4">
-      <AlbumArt thumbId={latest.thumb_id} size={240} />
-      <div className="text-center mt-6">
-        <div className="text-[11px] uppercase tracking-[0.06em] font-bold text-[var(--text-2)] mb-2">
-          Last added
+    <>
+      <div className="grid place-items-center px-8 pt-7 pb-4">
+        <AlbumArt thumbId={latest.thumb_id} size={240} />
+        <div className="text-center mt-6">
+          <div className="text-[11px] uppercase tracking-[0.06em] font-bold text-[var(--text-2)] mb-2">
+            Last added
+          </div>
+          <h2 className="text-[22px] font-bold tracking-[-0.02em] truncate max-w-[80vw] mx-auto">
+            {latest.title ?? latest.url}
+          </h2>
+          {latest.artist && <p className="text-[var(--text-2)] text-sm mt-1">{latest.artist}</p>}
         </div>
-        <h2 className="text-[22px] font-bold tracking-[-0.02em] truncate max-w-[80vw] mx-auto">
-          {latest.title ?? latest.url}
-        </h2>
-        {latest.artist && <p className="text-[var(--text-2)] text-sm mt-1">{latest.artist}</p>}
       </div>
-    </div>
+      <RelatedStrip items={latest.related ?? []} />
+    </>
   );
 }

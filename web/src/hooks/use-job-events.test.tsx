@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode } from "react";
@@ -398,5 +398,186 @@ describe("useJobEvents", () => {
     await waitFor(() => expect(es.closed).toBe(true));
     es.onerror?.(new Event("error"));
     expect(getToasts().some((t) => /lost connection/i.test(t.title))).toBe(false);
+  });
+
+  const RELATED_ITEM = {
+    id: "n1", title: "Girls Just Want To Have Fun", artist: "Cyndi Lauper",
+    platform: "youtube", webpage_url: "https://www.youtube.com/watch?v=PIb6AZdTr-A",
+    duration: 267, thumb_id: "a".repeat(40),
+  };
+
+  it("url_related patches the matching URL's related fields", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    es.emit(makeSnapshotEvent());
+    await waitFor(() =>
+      expect(client.getQueryData<JobSnapshot>(["job", "job-1"])).toBeDefined()
+    );
+    es.emit({ type: "url_related", job_id: "job-1", url: "https://a",
+              status: "ready", items: [RELATED_ITEM] });
+    await waitFor(() => {
+      const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+      expect(snap.urls[0].related_status).toBe("ready");
+    });
+    const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+    expect(snap.urls[0].related).toEqual([RELATED_ITEM]);
+  });
+
+  it("url_metadata patches related_status", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    es.emit(makeSnapshotEvent());
+    await waitFor(() =>
+      expect(client.getQueryData<JobSnapshot>(["job", "job-1"])).toBeDefined()
+    );
+    es.emit({ type: "url_metadata", job_id: "job-1", url: "https://a",
+              title: "T", uploader: "U", duration: 1,
+              thumbnail_ready: false, related_status: "pending" });
+    await waitFor(() => {
+      const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+      expect(snap.urls[0].related_status).toBe("pending");
+    });
+  });
+
+  it("snapshot round-trips related fields", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    const urls = makeSnapshotEvent().urls.map((u: object) => ({
+      ...u, related_status: "ready", related_items: [RELATED_ITEM],
+    }));
+    es.emit(makeSnapshotEvent({ urls }));
+    await waitFor(() => {
+      const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+      expect(snap.urls[0].related).toEqual([RELATED_ITEM]);
+      expect(snap.urls[0].related_status).toBe("ready");
+    });
+  });
+
+  it("late url_related with NO cached record upserts into history", async () => {
+    localStorage.setItem("audio_dl_history", JSON.stringify({
+      v: 1,
+      items: [{ url: "https://a", title: "T", artist: "U", media_format: "m4a",
+                paths: [], thumb_id: null, added_at: 1 }],
+    }));
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    // NO snapshot emitted: the query record does not exist (post-teardown).
+    es.emit({ type: "url_related", job_id: "job-1", url: "https://a",
+              status: "ready", items: [RELATED_ITEM] });
+    const stored = JSON.parse(localStorage.getItem("audio_dl_history")!);
+    expect(stored.items[0].related).toEqual([RELATED_ITEM]);
+  });
+
+  it("url_related on a terminal record patches cache AND upserts history", async () => {
+    // The Codex-P2 ordering race: url_completed then url_related arrive
+    // back-to-back before JobTracker's effect writes the history row. The
+    // cache patch must land so the pending history write carries the items.
+    localStorage.setItem("audio_dl_history", JSON.stringify({ v: 1, items: [] }));
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    es.emit(makeSnapshotEvent());
+    await waitFor(() =>
+      expect(client.getQueryData<JobSnapshot>(["job", "job-1"])).toBeDefined()
+    );
+    es.emit({ type: "url_completed", job_id: "job-1", url: "https://a",
+              paths: ["/tmp/a.mp3"], thumb_id: null });
+    es.emit({ type: "url_related", job_id: "job-1", url: "https://a",
+              status: "ready", items: [RELATED_ITEM] });
+    const snap = client.getQueryData<JobSnapshot>(["job", "job-1"])!;
+    expect(snap.state).toBe("completed");
+    expect(snap.urls[0].related).toEqual([RELATED_ITEM]); // cache patched
+    // History had no matching row yet → module updateItem no-oped, harmless.
+  });
+
+  function terminalSnapshotWithPending(related_status: string | null) {
+    return makeSnapshotEvent({
+      complete: true,
+      urls: [{
+        url: "https://a", media_format: "mp3", status: "completed",
+        percent: 100, speed: null, eta: null, paths: ["/tmp/a.mp3"],
+        error: null, thumb_id: null, title: null, uploader: null,
+        related_status, related_items: [],
+      }],
+    });
+  }
+
+  it("terminal with nothing pending closes immediately (unchanged behavior)", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    es.emit(terminalSnapshotWithPending(null));
+    await waitFor(() => expect(es.closed).toBe(true));
+  });
+
+  it("terminal with a pending completed URL keeps the socket open, then a late url_related closes it silently", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    es.emit(terminalSnapshotWithPending("pending"));
+    // Deliberately NOT closed: the linger window is open.
+    expect(es.closed).toBe(false);
+    es.emit({ type: "url_related", job_id: "job-1", url: "https://a",
+              status: "ready", items: [RELATED_ITEM] });
+    await waitFor(() => expect(es.closed).toBe(true));
+    expect(getToasts().some((t) => /lost connection/i.test(t.title))).toBe(false);
+  });
+
+  it("hook's own 10s cap closes the lingering socket", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new QueryClient();
+      renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+      await vi.waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+      const es = MockEventSource.instances[0];
+      es.emit(terminalSnapshotWithPending("pending"));
+      expect(es.closed).toBe(false);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(es.closed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("server close after terminal is silent — no Lost-connection toast even with the query record deleted", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    es.emit(terminalSnapshotWithPending("pending"));
+    // Simulate JobTracker's 1.5s removeQueries firing before the server closes.
+    client.removeQueries({ queryKey: ["job", "job-1"] });
+    es.onerror?.(new Event("error"));
+    expect(es.closed).toBe(true);
+    expect(getToasts().some((t) => /lost connection/i.test(t.title))).toBe(false);
+  });
+
+  it("failed URLs are dropped from the pending set at terminal", async () => {
+    const client = new QueryClient();
+    renderHook(() => useJobEvents("job-1"), { wrapper: wrapper(client) });
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThan(0));
+    const es = MockEventSource.instances[0];
+    es.emit(makeSnapshotEvent({
+      complete: true,
+      urls: [{
+        url: "https://a", media_format: "mp3", status: "failed",
+        percent: 0, speed: null, eta: null, paths: [],
+        error: "boom", thumb_id: null, title: null, uploader: null,
+        related_status: "pending", related_items: [],
+      }],
+    }));
+    // Failed URL's pending discovery is suppressed server-side — no wait.
+    await waitFor(() => expect(es.closed).toBe(true));
   });
 });

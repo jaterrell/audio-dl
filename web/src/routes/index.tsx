@@ -3,6 +3,7 @@ import { useActiveJobs } from "@/hooks/use-active-jobs";
 import { useHistory } from "@/hooks/use-history";
 import { HeroStage } from "@/components/stage";
 import { EmptyStage } from "@/components/empty-stage";
+import { RelatedStrip } from "@/components/related-strip";
 import { AlsoDownloading } from "@/components/also-downloading";
 import { Queue } from "@/components/queue";
 import { UrlInput } from "@/components/url-input";
@@ -32,6 +33,7 @@ function NowScreen() {
             snapshot={stageJob}
             activeCount={activeJobs.filter((j) => j.state === "running").length}
           />
+          <RelatedStrip items={stageJob.urls[0]?.related ?? []} />
         </div>
       ) : (
         <div key="empty" className="enter-fade">
