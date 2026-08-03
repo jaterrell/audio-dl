@@ -232,3 +232,25 @@ direct edits to the routine's own step text, not narrative.
   PR comment history. No new comment on project-tzu#13 or additional Slack/
   push notification — nothing changed that the maintainer doesn't already
   know from prior runs.
+- **2026-08-03**: PR #61 (this very doc's introduction) has since merged —
+  0 open PRs in audio-dl / audio-dl-internal this run. 0 untagged release
+  commits: `v2.5.0` tag still matches the latest release-commit subject on
+  `main` HEAD; the newest commit (`#61`) is docs-only and doesn't match the
+  `^vX.Y.Z` regex. 0 open issues in any of the three repos. project-tzu#13
+  unchanged (same head SHA `1405d307...`, same stale base
+  `worktree-verified-undo-v1.1`) — left alone, no new comment since nothing
+  changed since the 07-31 note. Confirmed (again) via `CronList` that this
+  routine has no session-local job a run can edit. None of the seven
+  "Recommended routine edits" above have been incorporated into the actual
+  routine prompt as of this run (verified directly: today's prompt still
+  says Step 4.7 "runs across both repos," Step 2's bucket triage still has
+  no draft/stacked-PR carve-out, Step 3e's REPO CONVENTIONS block is still
+  audio-dl-only with Steps 1-4/4.8 not iterating project-tzu at all, and
+  bucket (a)/(c) still don't special-case `COMMENTED` reviews or gate
+  auto-merge on `SELF_LOGIN`/branch pattern) — whoever next edits the
+  routine prompt should pull straight from that section rather than
+  re-deriving it. Local clones at `/home/user/{audio-dl,audio-dl-internal,
+  project-tzu}` all exist and point at the expected `origin` remotes, for
+  what it's worth to a future run that needs to do local git work (Step
+  2.5/3/4.8's checkout steps) rather than pure MCP calls. Nothing-to-do
+  run — no Slack/push notification sent.
