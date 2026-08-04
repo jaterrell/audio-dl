@@ -276,4 +276,16 @@ direct edits to the routine's own step text, not narrative.
   reading were both applied to project-tzu#13 and to keeping Steps 1-4/4.8
   scoped to the two audio-dl repos, per the routine's literal current
   wording). Nothing-to-do run — no Slack/push notification sent, per the
-  empty-run silence policy.
+  empty-run silence policy. **Same-day follow-up (later invocation, still
+  2026-08-04):** a second run within the day reconfirmed every figure above
+  via live MCP calls with no errors — `get_me`, `list_pull_requests` (both
+  audio-dl repos + project-tzu), `pull_request_read` (get/get_reviews/
+  get_comments/get_review_comments on project-tzu#13), `list_issues` (all
+  three repos), `list_tags` + `list_commits` + `get_commit` (audio-dl-internal
+  release-tag scan). All returned cleanly on the first call — the tool
+  mapping in the "What it does" section above is solid for the steady-state
+  path; Step 5's actual dispatch/watch tools (`actions_run_trigger`,
+  `actions_list`, `actions_get`) remain unexercised since no untagged
+  release commit has come up in any run to date. No change to which
+  recommended edits are incorporated. Nothing-to-do — no Slack/push
+  notification sent.
