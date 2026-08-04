@@ -254,3 +254,26 @@ direct edits to the routine's own step text, not narrative.
   what it's worth to a future run that needs to do local git work (Step
   2.5/3/4.8's checkout steps) rather than pure MCP calls. Nothing-to-do
   run — no Slack/push notification sent.
+- **2026-08-04**: Still steady state — 0 open PRs in audio-dl /
+  audio-dl-internal, 0 untagged release commits (`v2.5.0` still matches the
+  latest release-commit subject on `main` HEAD; commits since 08-03 are
+  docs-only and don't match the `^vX.Y.Z` regex), 0 open issues in any of
+  the three repos. project-tzu#13 unchanged since 07-31 (same head SHA
+  `1405d307...`, same stale base `worktree-verified-undo-v1.1`,
+  `mergeable_state: clean`, same 2-file/+86-10 diff) — left alone, no new
+  comment since nothing changed. `CronList` again confirms no session-local
+  job exists for a run to edit — the routine's actual prompt is still only
+  reachable by whoever configured it in the claude.ai routines UI. None of
+  the "Recommended routine edits" above have been incorporated into the
+  live routine prompt yet (same verification as 08-03: Step 4.7 still says
+  "both repos," Step 2 still has no draft/stacked-PR carve-out, Step 3e is
+  still audio-dl-only, project-tzu is still outside the Steps 1-4/4.8 REPO
+  iteration despite being named in the top-level task description, and
+  bucket (a)/(c) still don't special-case `COMMENTED` reviews or gate
+  auto-merge on `SELF_LOGIN`/branch pattern). This run applied all of these
+  by judgment where relevant (no PRs existed to test the bucket/auto-merge
+  gates against, but the draft/stacked-PR skip and the audio-dl-only-REPO
+  reading were both applied to project-tzu#13 and to keeping Steps 1-4/4.8
+  scoped to the two audio-dl repos, per the routine's literal current
+  wording). Nothing-to-do run — no Slack/push notification sent, per the
+  empty-run silence policy.
