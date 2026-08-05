@@ -209,6 +209,16 @@ direct edits to the routine's own step text, not narrative.
    designated feature branch + PR flow is the correct, lower-risk default —
    this carve-out is narrowly for the routine's own log file, not general
    permission to bypass the branch contract.
+9. **project-tzu is in the top-level task's repo list but the step text
+   still doesn't iterate it for Steps 1-4/4.8.** Every run since 2026-07-30
+   has applied "treat project-tzu like audio-dl for Steps 1-4/4.8, skip it
+   for 4.5/4.6, fold it into 4.7's repo set" by judgment, consistently, with
+   the same outcome each time (0 open issues, 1 draft/stacked PR correctly
+   skipped). This is stable enough in practice that it's now a "confirm
+   still true" check each run rather than a live ambiguity — but the actual
+   routine prompt still needs the literal step text updated so it isn't
+   judgment-dependent for whoever edits it next, or for a differently-tuned
+   future run that might resolve the ambiguity differently.
 
 ## Run log
 
@@ -323,3 +333,18 @@ direct edits to the routine's own step text, not narrative.
   recommended-edit item 8 above; this doc update itself was committed
   straight to `main` per that resolution. Nothing-to-do run otherwise — no
   Slack/push notification sent, per the empty-run silence policy.
+- **2026-08-05**: Still steady state, fifth consecutive nothing-to-do run —
+  0 open PRs in audio-dl / audio-dl-internal, 0 untagged release commits
+  (`v2.5.0` still matches the latest release-commit subject on `main` HEAD;
+  the only commits since 08-04 are docs-only routine-log entries, none
+  matching `^vX.Y.Z`), 0 open issues in any of the three repos.
+  project-tzu#13 unchanged since 07-31 (same head SHA `1405d307...`, same
+  stale base `worktree-verified-undo-v1.1`, its only comment still
+  self-authored so never qualified as "unaddressed") — left alone, no new
+  comment since nothing changed. Added recommended-edit item 9 above: the
+  project-tzu-scoping judgment call (Steps 1-4/4.8 yes, 4.5/4.6 no, 4.7
+  yes) has now produced the identical outcome on six straight runs and is
+  stable enough to stop treating as a live ambiguity, but still needs the
+  literal routine-prompt text updated so it isn't judgment-dependent.
+  Nothing-to-do run — no Slack/push notification sent, per the empty-run
+  silence policy.
