@@ -380,3 +380,27 @@ direct edits to the routine's own step text, not narrative.
   routine prompt beyond the nine "Recommended routine edits" above.
   Nothing-to-do run — no Slack/push notification sent, per the empty-run
   silence policy.
+- **2026-08-06:** Same steady state — 0 open PRs in audio-dl /
+  audio-dl-internal, 0 untagged release commits (`v2.5.0` still matches the
+  latest release-commit subject on `main` HEAD; the only commit since the
+  third 08-05 entry is that entry's own doc commit, docs-only, doesn't match
+  `^vX.Y.Z`), 0 open issues in any of the three repos. project-tzu#13
+  unchanged since 07-31 (same head SHA `1405d307...`, same stale base
+  `worktree-verified-undo-v1.1`, only comment still self-authored so never
+  qualified as "unaddressed") — left alone, no new comment since nothing
+  changed. Confirmed via `CronList`: still no editable session-local job —
+  ninth consecutive run confirming the routine's actual prompt is reachable
+  only through the claude.ai routines UI. Ninth consecutive run landing on
+  the identical project-tzu-scoping outcome (Steps 1-4/4.8 yes, 4.5/4.6 no,
+  4.7 yes) and the identical "recommended edits not yet incorporated"
+  finding against the live prompt text pasted into this run's task
+  description (verified again: Step 4.7 still says "both repos," Step 2's
+  bucket triage still has no draft/stacked-PR carve-out, Step 3e's REPO
+  CONVENTIONS block is still audio-dl-only, and bucket (a)/(c) still don't
+  special-case `COMMENTED` reviews or gate auto-merge on
+  `SELF_LOGIN`/branch pattern). At this point the "Recommended routine
+  edits" section above is the actionable artifact — nine runs of
+  confirmation without incorporation suggests the next win here is a human
+  actually pasting section items 1-9 into the routine prompt, not further
+  runs re-deriving the same findings. Nothing-to-do run — no Slack/push
+  notification sent, per the empty-run silence policy.
