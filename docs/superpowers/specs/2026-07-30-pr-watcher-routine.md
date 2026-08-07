@@ -230,6 +230,17 @@ direct edits to the routine's own step text, not narrative.
     must fetch the current full content first, build the complete new
     content locally (existing content + the new run-log entry), and pass
     that whole thing — never just the diff/delta.
+11. **Twelve-plus consecutive identical steady-state runs (07-31 through
+    08-07) is itself a signal.** Every run applies the same project-tzu
+    scoping judgment, finds the same 0 PRs / 0 untagged tags / 0 issues, and
+    re-confirms the same "recommended edits not yet incorporated" state.
+    Diminishing-returns point reached: continuing to re-verify and
+    re-narrate identical findings run after run adds run-log volume without
+    adding information. A future run (or whoever next edits the live
+    routine prompt) should treat items 1-10 above as the complete,
+    stable backlog and either incorporate them or explicitly decide not to
+    — repeating the confirmation cycle indefinitely is not a substitute for
+    that decision.
 
 ## Run log
 
@@ -483,3 +494,24 @@ direct edits to the routine's own step text, not narrative.
   remain the actionable, paste-ready backlog against the live routine
   prompt; twelve runs of confirmation without incorporation. Nothing-to-do
   run — no Slack/push notification sent, per the empty-run silence policy.
+- **2026-08-07 (second invocation):** Thirteenth consecutive nothing-to-do
+  run — 0 open PRs in audio-dl / audio-dl-internal, 0 untagged release
+  commits (`v2.5.0` still matches the latest release-commit subject on
+  `main` HEAD; the only commit since the first 08-07 entry is that entry's
+  own doc commit, docs-only, doesn't match `^vX.Y.Z`), 0 open issues in
+  audio-dl / audio-dl-internal. project-tzu#13 unchanged since 07-31 (same
+  head SHA `1405d307...`, same stale base `worktree-verified-undo-v1.1`,
+  one comment, still self-authored so never qualifies as "unaddressed") —
+  left alone, no new comment. `CronList` again confirms no editable
+  session-local job. Applied the standing project-tzu-scoping judgment once
+  more (Steps 1-4/4.8 yes — checked its 1 open PR, draft/stacked, correctly
+  skipped, and 0 open issues aren't applicable there since Step 4.8 is
+  audio-dl/-internal only; 4.5/4.6 no; 4.7 yes, moot — nothing reached
+  APPROVED+green in any repo, Slack lookup skipped as unnecessary). Added
+  recommended-edit item 11 above: thirteen consecutive identical
+  steady-state runs is a diminishing-returns signal in itself — items 1-10
+  are now a stable, complete backlog and the next real progress here is a
+  human incorporating them into the live routine prompt (or explicitly
+  deciding not to), not another run re-confirming the same findings.
+  Nothing-to-do run — no Slack/push notification sent, per the empty-run
+  silence policy.
