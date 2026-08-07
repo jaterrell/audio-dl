@@ -464,3 +464,22 @@ direct edits to the routine's own step text, not narrative.
   09-run-old recommendation to keep steady-state confirmations short rather
   than re-deriving each finding. Nothing-to-do run — no Slack/push
   notification sent, per the empty-run silence policy.
+- **2026-08-07:** Twelfth consecutive nothing-to-do run, same steady state
+  as every entry since 07-31 — 0 open PRs in audio-dl / audio-dl-internal,
+  0 untagged release commits (`v2.5.0` still matches the latest
+  release-commit subject on `main` HEAD; the only commits since the third
+  08-06 entry are that entry's own doc commit plus this repo's docs-only
+  routine-log commits, none matching `^vX.Y.Z`), 0 open issues in any of
+  the three repos. project-tzu#13 unchanged since 07-31 (same head SHA
+  `1405d307...`, same stale base `worktree-verified-undo-v1.1`,
+  `mergeable_state: clean`, one comment, still self-authored so never
+  qualifies as "unaddressed"). Confirmed via `CronList`: still no editable
+  session-local job — the routine prompt remains reachable only through
+  the claude.ai routines UI. Applied the standing project-tzu-scoping
+  judgment once more (Steps 1-4/4.8 yes; 4.5/4.6 no; 4.7 yes, moot since
+  nothing reached APPROVED+green in any repo this run, so the
+  `#audio-dl-pr-watcher` channel lookup was skipped as unnecessary this
+  run). No new findings to add to "Recommended routine edits" — items 1-10
+  remain the actionable, paste-ready backlog against the live routine
+  prompt; twelve runs of confirmation without incorporation. Nothing-to-do
+  run — no Slack/push notification sent, per the empty-run silence policy.
